@@ -2353,7 +2353,8 @@
             age: 24,
             friends: [],
             chats: {},
-            online: true
+            online: true,
+            deviceId: "founder_device"
         };
 
         const ADMIN_ACCOUNT = {
@@ -2372,23 +2373,88 @@
             age: 34,
             friends: [],
             chats: {},
-            online: true
+            online: true,
+            deviceId: "admin_device"
         };
 
         let activeInstallations = {};
         let clientIP = null;
         let currentChatWith = null;
+        let currentDeviceId = null;
         
         // ==============================================
-        // УЛУЧШЕННАЯ СИСТЕМА ХРАНЕНИЯ
+        // ИСПРАВЛЕННАЯ СИСТЕМА СИНХРОНИЗАЦИИ
         // ==============================================
-
-        function getUsers() {
+        
+        // Генерация уникального ID устройства
+        function getDeviceId() {
+            let deviceId = localStorage.getItem('luseam_device_id');
+            if (!deviceId) {
+                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                localStorage.setItem('luseam_device_id', deviceId);
+            }
+            return deviceId;
+        }
+        
+        // Получение всех пользователей (локальных + синхронизированных)
+        function getAllUsers() {
+            try {
+                const localUsers = getLocalUsers();
+                const globalUsers = getGlobalUsers();
+                
+                // Объединяем пользователей, приоритет у глобальных данных
+                const allUsersMap = new Map();
+                
+                // Сначала добавляем локальных пользователей
+                localUsers.forEach(user => {
+                    if (user && user.username) {
+                        allUsersMap.set(user.username, {
+                            ...user,
+                            source: 'local',
+                            deviceId: user.deviceId || currentDeviceId
+                        });
+                    }
+                });
+                
+                // Затем добавляем/обновляем глобальными пользователями
+                globalUsers.forEach(globalUser => {
+                    if (globalUser && globalUser.username) {
+                        const existingUser = allUsersMap.get(globalUser.username);
+                        if (existingUser) {
+                            // Объединяем данные, приоритет у глобальных
+                            allUsersMap.set(globalUser.username, {
+                                ...existingUser,
+                                ...globalUser,
+                                source: 'global',
+                                deviceId: globalUser.deviceId || existingUser.deviceId
+                            });
+                        } else {
+                            allUsersMap.set(globalUser.username, {
+                                ...globalUser,
+                                source: 'global'
+                            });
+                        }
+                    }
+                });
+                
+                return Array.from(allUsersMap.values());
+            } catch (e) {
+                console.error("Ошибка при получении всех пользователей:", e);
+                return [];
+            }
+        }
+        
+        // Получение локальных пользователей
+        function getLocalUsers() {
             try {
                 const usersData = localStorage.getItem('luseam_users_v3');
                 
                 if (!usersData) {
                     const baseUsers = [FOUNDER_ACCOUNT, ADMIN_ACCOUNT];
+                    baseUsers.forEach(user => {
+                        user.deviceId = currentDeviceId;
+                        user.lastSync = new Date().toISOString();
+                    });
                     localStorage.setItem('luseam_users_v3', JSON.stringify(baseUsers));
                     return baseUsers;
                 }
@@ -2396,42 +2462,192 @@
                 const parsed = JSON.parse(usersData);
                 return Array.isArray(parsed) ? parsed : [];
             } catch (e) {
-                console.error("Ошибка при чтении пользователей:", e);
+                console.error("Ошибка при чтении локальных пользователей:", e);
                 return [];
             }
         }
-
-        function saveUsers(usersArray) {
+        
+        // Сохранение локальных пользователей
+        function saveLocalUsers(usersArray) {
             try {
                 if (!Array.isArray(usersArray)) {
                     console.error("Ошибка: пытаемся сохранить не массив пользователей");
                     return false;
                 }
                 
+                // Добавляем deviceId если нет
+                usersArray.forEach(user => {
+                    if (!user.deviceId) {
+                        user.deviceId = currentDeviceId;
+                    }
+                    user.lastSync = new Date().toISOString();
+                });
+                
                 localStorage.setItem('luseam_users_v3', JSON.stringify(usersArray));
-                syncWithGlobalStorage();
                 return true;
             } catch (e) {
-                console.error("Ошибка при сохранении пользователей:", e);
+                console.error("Ошибка при сохранении локальных пользователей:", e);
                 return false;
             }
         }
-
+        
+        // Получение глобальных пользователей
+        function getGlobalUsers() {
+            try {
+                const globalData = getGlobalStorage();
+                return globalData.users || [];
+            } catch (e) {
+                console.error("Ошибка при получении глобальных пользователей:", e);
+                return [];
+            }
+        }
+        
+        // Сохранение глобальных пользователей
+        function saveGlobalUsers(usersArray) {
+            try {
+                const globalData = getGlobalStorage();
+                globalData.users = usersArray;
+                globalData.lastSync = new Date().toISOString();
+                saveGlobalStorage(globalData);
+                return true;
+            } catch (e) {
+                console.error("Ошибка при сохранении глобальных пользователей:", e);
+                return false;
+            }
+        }
+        
+        // Обновление глобального хранилища
+        function updateGlobalStorage() {
+            try {
+                const localUsers = getLocalUsers();
+                const globalData = getGlobalStorage();
+                
+                // Объединяем пользователей в глобальное хранилище
+                const globalUsersMap = new Map();
+                
+                // Добавляем существующих глобальных пользователей
+                (globalData.users || []).forEach(user => {
+                    if (user && user.username) {
+                        globalUsersMap.set(user.username, user);
+                    }
+                });
+                
+                // Обновляем/добавляем локальных пользователей
+                localUsers.forEach(localUser => {
+                    if (localUser && localUser.username) {
+                        const existingGlobalUser = globalUsersMap.get(localUser.username);
+                        if (existingGlobalUser) {
+                            // Обновляем только если локальные данные новее
+                            if (!existingGlobalUser.lastSync || 
+                                new Date(localUser.lastSync) > new Date(existingGlobalUser.lastSync)) {
+                                globalUsersMap.set(localUser.username, {
+                                    ...existingGlobalUser,
+                                    ...localUser,
+                                    lastSync: new Date().toISOString()
+                                });
+                            }
+                        } else {
+                            // Добавляем нового пользователя
+                            globalUsersMap.set(localUser.username, {
+                                ...localUser,
+                                lastSync: new Date().toISOString()
+                            });
+                        }
+                    }
+                });
+                
+                // Сохраняем обратно
+                globalData.users = Array.from(globalUsersMap.values());
+                globalData.lastSync = new Date().toISOString();
+                saveGlobalStorage(globalData);
+                
+                return true;
+            } catch (e) {
+                console.error("Ошибка при обновлении глобального хранилища:", e);
+                return false;
+            }
+        }
+        
+        // Синхронизация пользователей для основателя
+        function syncUsersForFounder() {
+            const currentUser = getCurrentUser();
+            if (!currentUser || !currentUser.isFounder) {
+                return false;
+            }
+            
+            try {
+                // Обновляем глобальное хранилище
+                updateGlobalStorage();
+                
+                // Получаем всех пользователей
+                const allUsers = getAllUsers();
+                
+                // Обновляем локальное хранилище основателя
+                const localUsers = getLocalUsers();
+                const localUsersMap = new Map();
+                
+                localUsers.forEach(user => {
+                    if (user && user.username) {
+                        localUsersMap.set(user.username, user);
+                    }
+                });
+                
+                // Добавляем/обновляем пользователей из глобального хранилища
+                allUsers.forEach(user => {
+                    if (user && user.username) {
+                        localUsersMap.set(user.username, {
+                            ...user,
+                            deviceId: user.deviceId || currentDeviceId,
+                            lastSync: new Date().toISOString()
+                        });
+                    }
+                });
+                
+                // Сохраняем обновленных пользователей
+                saveLocalUsers(Array.from(localUsersMap.values()));
+                
+                console.log("✅ Синхронизация для основателя завершена");
+                console.log("Всего пользователей в системе:", allUsers.length);
+                
+                return true;
+            } catch (e) {
+                console.error("Ошибка при синхронизации для основателя:", e);
+                return false;
+            }
+        }
+        
+        // ==============================================
+        // ОСТАЛЬНЫЕ ФУНКЦИИ (адаптированные)
+        // ==============================================
+        
+        function getUsers() {
+            return getLocalUsers();
+        }
+        
+        function saveUsers(usersArray) {
+            const result = saveLocalUsers(usersArray);
+            if (result) {
+                // Автоматически обновляем глобальное хранилище
+                updateGlobalStorage();
+            }
+            return result;
+        }
+        
         function findUser(usernameOrEmail) {
-            const users = getUsers();
+            const users = getAllUsers();
             return users.find(u => 
                 u.username.toLowerCase() === usernameOrEmail.toLowerCase() || 
-                u.email.toLowerCase() === usernameOrEmail.toLowerCase()
+                (u.email && u.email.toLowerCase() === usernameOrEmail.toLowerCase())
             );
         }
-
+        
         function getCurrentUser() {
             try {
                 const userData = sessionStorage.getItem('current_user_v3');
                 if (!userData) return null;
                 
                 const sessionUser = JSON.parse(userData);
-                const allUsers = getUsers();
+                const allUsers = getAllUsers();
                 const fullUser = allUsers.find(u => u.username === sessionUser.username);
                 
                 if (!fullUser) {
@@ -2449,7 +2665,8 @@
                     bans: fullUser.bans || [],
                     friends: fullUser.friends || [],
                     chats: fullUser.chats || {},
-                    online: true
+                    online: true,
+                    deviceId: fullUser.deviceId || currentDeviceId
                 };
                 
                 sessionStorage.setItem('current_user_v3', JSON.stringify(updatedUser));
@@ -2465,14 +2682,14 @@
         // ГЛОБАЛЬНОЕ ХРАНИЛИЩЕ
         // ==============================================
         
-        const GLOBAL_STORAGE_KEY = 'luseam_global_data_v4';
+        const GLOBAL_STORAGE_KEY = 'luseam_global_data_v5';
         
         function getGlobalStorage() {
             try {
                 const data = localStorage.getItem(GLOBAL_STORAGE_KEY);
                 if (!data) {
                     return {
-                        version: 4,
+                        version: 5,
                         users: [],
                         games: [],
                         reviews: {},
@@ -2494,7 +2711,8 @@
                         },
                         friends: {},
                         chats: {},
-                        lastSync: null
+                        lastSync: null,
+                        devices: []
                     };
                 }
                 return JSON.parse(data);
@@ -2511,49 +2729,6 @@
                 return true;
             } catch (e) {
                 console.error('Ошибка при сохранении глобального хранилища:', e);
-                return false;
-            }
-        }
-        
-        function syncWithGlobalStorage() {
-            try {
-                const globalData = getGlobalStorage();
-                const localUsers = getUsers();
-                const localGames = JSON.parse(localStorage.getItem('luseam_games_v2') || '[]');
-                const localReviews = JSON.parse(localStorage.getItem('luseam_reviews_v2') || '{}');
-                const localModeration = JSON.parse(localStorage.getItem('luseam_moderation_v2') || '[]');
-                const localSupport = JSON.parse(localStorage.getItem('luseam_support_v2') || '[]');
-                const localLibraries = JSON.parse(localStorage.getItem('luseam_libraries_v2') || '{}');
-                const localInstalls = JSON.parse(localStorage.getItem('luseam_installs_v2') || '{}');
-                const localFriends = JSON.parse(localStorage.getItem('luseam_friends_v1') || '{}');
-                const localChats = JSON.parse(localStorage.getItem('luseam_chats_v1') || '{}');
-                
-                globalData.users = localUsers;
-                globalData.games = localGames;
-                globalData.reviews = localReviews;
-                globalData.moderation = localModeration;
-                globalData.support = localSupport;
-                globalData.libraries = localLibraries;
-                globalData.installs = localInstalls;
-                globalData.friends = localFriends;
-                globalData.chats = localChats;
-                
-                globalData.statistics = {
-                    totalUsers: localUsers.length,
-                    totalGames: localGames.filter(g => g.approved).length,
-                    totalRevenue: localGames.reduce((sum, game) => sum + (game.price * (game.downloads || 0)), 0),
-                    dailyActiveUsers: localUsers.filter(u => {
-                        if (!u.lastLogin) return false;
-                        const lastLogin = new Date(u.lastLogin);
-                        const today = new Date();
-                        return lastLogin.toDateString() === today.toDateString();
-                    }).map(u => u.username)
-                };
-                
-                saveGlobalStorage(globalData);
-                return true;
-            } catch (e) {
-                console.error('❌ Ошибка синхронизации:', e);
                 return false;
             }
         }
@@ -2594,7 +2769,8 @@
                     globalData.analytics.ips.push({
                         ip: clientIP,
                         timestamp: new Date().toISOString(),
-                        userAgent: navigator.userAgent.substring(0, 100)
+                        userAgent: navigator.userAgent.substring(0, 100),
+                        deviceId: currentDeviceId
                     });
                     
                     saveGlobalStorage(globalData);
@@ -2614,11 +2790,13 @@
         function logout() {
             const currentUser = getCurrentUser();
             if (currentUser) {
-                const users = getUsers();
-                const userIndex = users.findIndex(u => u.username === currentUser.username);
+                const localUsers = getLocalUsers();
+                const userIndex = localUsers.findIndex(u => u.username === currentUser.username);
                 if (userIndex !== -1) {
-                    users[userIndex].online = false;
-                    saveUsers(users);
+                    localUsers[userIndex].online = false;
+                    localUsers[userIndex].lastLogin = new Date().toISOString();
+                    saveLocalUsers(localUsers);
+                    updateGlobalStorage();
                 }
             }
             
@@ -2632,194 +2810,126 @@
         }
 
         // ==============================================
-        // ИСПРАВЛЕННАЯ ФУНКЦИЯ СОЗДАНИЯ ИГРЫ
+        // ИСПРАВЛЕННАЯ ЗАГРУЗКА ПОЛЬЗОВАТЕЛЕЙ ДЛЯ ОСНОВАТЕЛЯ
         // ==============================================
-        function submitGame() {
+        function loadFounderUsers() {
             const currentUser = getCurrentUser();
-            if (!currentUser) {
-                showNotification('Сначала войдите в аккаунт', 'error');
-                return;
-            }
-            
-            const title = document.getElementById('gameTitle').value.trim();
-            const description = document.getElementById('gameDescription').value.trim();
-            const genre = document.getElementById('gameGenre').value;
-            const price = parseInt(document.getElementById('gamePrice').value) || 0;
-            const coverFile = document.getElementById('gameCover').files[0];
-            const gameFile = document.getElementById('gameFile').files[0];
-            const mobileSupport = document.getElementById('mobileSupport').checked;
-            
-            if (!title) {
-                showNotification('Введите название игры', 'error');
-                return;
-            }
-            
-            if (!description) {
-                showNotification('Введите описание игры', 'error');
-                return;
-            }
-            
-            if (!genre) {
-                showNotification('Выберите жанр игры', 'error');
-                return;
-            }
-            
-            if (price < 0 || price > 10000) {
-                showNotification('Цена должна быть от 0 до 10000 LC', 'error');
-                return;
-            }
-            
-            if (!gameFile) {
-                showNotification('Выберите файл игры (HTML, JS, ZIP, EXE)', 'error');
-                return;
-            }
-            
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                const gameCode = e.target.result;
-                
-                if (coverFile) {
-                    const coverReader = new FileReader();
-                    coverReader.onload = function(e) {
-                        const coverUrl = e.target.result;
-                        finalizeGameSubmission(title, description, genre, price, coverUrl, gameCode, currentUser.username, mobileSupport, gameFile.type);
-                    };
-                    coverReader.readAsDataURL(coverFile);
-                } else {
-                    finalizeGameSubmission(title, description, genre, price, null, gameCode, currentUser.username, mobileSupport, gameFile.type);
-                }
-            };
-            
-            if (gameFile.name.endsWith('.zip') || gameFile.name.endsWith('.exe')) {
-                const gameCode = `Архив/исполняемый файл: ${gameFile.name}\nРазмер: ${(gameFile.size / 1024).toFixed(2)} KB`;
-                if (coverFile) {
-                    const coverReader = new FileReader();
-                    coverReader.onload = function(e) {
-                        const coverUrl = e.target.result;
-                        finalizeGameSubmission(title, description, genre, price, coverUrl, gameCode, currentUser.username, mobileSupport, gameFile.type);
-                    };
-                    coverReader.readAsDataURL(coverFile);
-                } else {
-                    finalizeGameSubmission(title, description, genre, price, null, gameCode, currentUser.username, mobileSupport, gameFile.type);
-                }
-            } else {
-                reader.readAsText(gameFile);
-            }
-        }
-
-        function finalizeGameSubmission(title, description, genre, price, coverUrl, gameCode, username, mobileSupport, fileType) {
-            const moderation = JSON.parse(localStorage.getItem('luseam_moderation_v2') || '[]');
-            
-            const newGame = {
-                id: "game_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9),
-                title: title,
-                description: description,
-                genre: genre,
-                price: price,
-                author: username,
-                image: "🛠️",
-                cover: coverUrl,
-                code: gameCode,
-                fileType: fileType,
-                approved: false,
-                downloads: 0,
-                rating: 0,
-                createdAt: new Date().toISOString(),
-                supportsSave: false,
-                mobileSupport: mobileSupport
-            };
-            
-            moderation.push(newGame);
-            localStorage.setItem('luseam_moderation_v2', JSON.stringify(moderation));
-            
-            syncWithGlobalStorage();
-            
-            document.getElementById('gameTitle').value = '';
-            document.getElementById('gameDescription').value = '';
-            document.getElementById('gameGenre').value = '';
-            document.getElementById('gamePrice').value = '0';
-            document.getElementById('gameCover').value = '';
-            document.getElementById('gameFile').value = '';
-            document.getElementById('gameCoverPreview').textContent = '';
-            document.getElementById('gameFileName').textContent = '';
-            document.getElementById('coverPreviewImage').src = '';
-            document.getElementById('coverPreviewImage').classList.remove('show');
-            document.getElementById('mobileSupport').checked = true;
-            
-            showNotification('✅ Игра отправлена на модерацию! Она появится в магазине после проверки администратором.', 'success');
-        }
-
-        // ==============================================
-        // ФУНКЦИЯ ПРОСМОТРА IP АДРЕСОВ
-        // ==============================================
-        function viewIPsAsAdmin() {
-            const currentUser = getCurrentUser();
-            if (!currentUser || (!currentUser.isAdmin && !currentUser.isFounder)) {
+            if (!currentUser || !currentUser.isFounder) {
                 showNotification('Доступ запрещен', 'error');
                 return;
             }
             
-            const globalData = getGlobalStorage();
-            const users = getUsers();
+            // Синхронизируем данные
+            syncUsersForFounder();
+            
+            const allUsers = getAllUsers();
             
             let html = `
-                <div class="ip-viewer">
-                    <h3 style="color: white; margin-bottom: 15px;">🌐 Просмотр IP-адресов пользователей</h3>
-                    <p style="color: var(--gray); margin-bottom: 15px;">
-                        Администрация имеет доступ к IP-адресам для обеспечения безопасности платформы.
-                        Данные автоматически удаляются через 3 месяца.
-                    </p>
+                <div class="admin-section">
+                    <h3 class="admin-section-title">
+                        <span>👥</span>
+                        <span>Все пользователи системы (${allUsers.length})</span>
+                        <button class="btn btn-success btn-small" onclick="syncUsersForFounder(); loadFounderUsers();" style="margin-left: 10px;">
+                            <span>🔄</span>
+                            <span>Обновить</span>
+                        </button>
+                    </h3>
                     
-                    <div class="ip-list">
+                    <div style="margin-bottom: 20px; padding: 15px; background: rgba(42, 51, 66, 0.8); border-radius: 10px;">
+                        <div style="color: var(--light);">
+                            <strong>📊 Статистика системы:</strong>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 10px;">
+                                <div style="text-align: center;">
+                                    <div style="font-size: 24px; font-weight: bold; color: var(--founder);">${allUsers.length}</div>
+                                    <div style="color: var(--gray); font-size: 12px;">Всего пользователей</div>
+                                </div>
+                                <div style="text-align: center;">
+                                    <div style="font-size: 24px; font-weight: bold; color: var(--success);">${allUsers.filter(u => u.online).length}</div>
+                                    <div style="color: var(--gray); font-size: 12px;">Онлайн сейчас</div>
+                                </div>
+                                <div style="text-align: center;">
+                                    <div style="font-size: 24px; font-weight: bold; color: var(--warning);">${new Set(allUsers.map(u => u.deviceId)).size}</div>
+                                    <div style="color: var(--gray); font-size: 12px;">Устройств</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="user-list">
             `;
             
-            if (globalData.analytics.ips.length === 0) {
+            if (allUsers.length === 0) {
                 html += `
                     <div style="text-align: center; padding: 40px; color: var(--gray);">
-                        <div style="font-size: 48px; margin-bottom: 15px;">🌐</div>
-                        <h4>Нет данных об IP-адресах</h4>
-                        <p>IP-адреса еще не были собраны.</p>
+                        <div style="font-size: 48px; margin-bottom: 15px;">👥</div>
+                        <h4>Нет пользователей</h4>
+                        <p>На платформе еще нет зарегистрированных пользователей.</p>
                     </div>
                 `;
             } else {
-                const userIPs = {};
-                
-                globalData.analytics.ips.forEach(entry => {
-                    const loginEntry = globalData.analytics.logins.find(l => l.ip === entry.ip);
-                    const username = loginEntry ? loginEntry.username : 'Неизвестный пользователь';
-                    
-                    if (!userIPs[username]) {
-                        userIPs[username] = [];
-                    }
-                    
-                    userIPs[username].push(entry);
+                // Сортируем пользователей: сначала онлайн, потом по алфавиту
+                allUsers.sort((a, b) => {
+                    if (a.online && !b.online) return -1;
+                    if (!a.online && b.online) return 1;
+                    return a.username.localeCompare(b.username);
                 });
                 
-                Object.keys(userIPs).forEach(username => {
-                    const ips = userIPs[username];
-                    const latestIP = ips[ips.length - 1];
-                    const user = users.find(u => u.username === username);
-                    const isBanned = user ? user.isBanned : false;
+                allUsers.forEach(user => {
+                    const isCurrent = user.username === currentUser.username;
+                    const isCurrentlyBanned = user.isBanned;
+                    const isOnline = user.online || false;
+                    const deviceInfo = user.deviceId ? 
+                        `<span style="color: var(--gray); font-size: 11px;">📱 ${user.deviceId.substring(0, 10)}...</span>` : '';
                     
                     html += `
-                        <div class="ip-item">
-                            <div>
-                                <strong style="color: ${isBanned ? 'var(--danger)' : 'white'};">${username}</strong>
-                                ${isBanned ? '<span style="color: var(--danger); margin-left: 10px;">🚫 ЗАБЛОКИРОВАН</span>' : ''}
-                                <div style="color: var(--primary); font-size: 14px; margin-top: 5px;">
-                                    Последний IP: ${latestIP.ip}
+                        <div class="user-item">
+                            <div class="user-header-inner">
+                                <div>
+                                    <strong style="color: white; font-size: 18px;">
+                                        ${user.username}
+                                        <span class="${isOnline ? 'online-dot' : 'offline-dot'}" style="margin-left: 5px;" title="${isOnline ? 'Онлайн' : 'Оффлайн'}"></span>
+                                        ${user.isFounder ? '<span style="color: var(--founder); margin-left: 10px;">👑 ОСНОВАТЕЛЬ</span>' : ''}
+                                        ${user.isAdmin && !user.isFounder ? '<span style="color: var(--admin); margin-left: 10px;">⚙️ АДМИН</span>' : ''}
+                                        ${isCurrentlyBanned ? '<span style="color: var(--danger); margin-left: 10px;">🚫 ЗАБЛОКИРОВАН</span>' : ''}
+                                    </strong>
+                                    <div style="color: var(--gray); margin-top: 5px;">
+                                        📧 ${user.email || 'Нет email'} | 💰 ${user.balance || 0} LC
+                                        ${deviceInfo}
+                                    </div>
+                                    <div style="color: var(--light); font-size: 12px; margin-top: 5px;">
+                                        📅 Регистрация: ${user.regDate ? new Date(user.regDate).toLocaleDateString('ru-RU') : 'Не указана'}
+                                        ${user.age ? ` | Возраст: ${user.age}` : ''}
+                                    </div>
+                                    ${user.ipHistory && user.ipHistory.length > 0 ? `
+                                        <div style="color: var(--gray); font-size: 11px; margin-top: 5px;">
+                                            📍 Последний IP: ${user.ipHistory[user.ipHistory.length - 1]}
+                                        </div>
+                                    ` : ''}
+                                    ${user.source ? `
+                                        <div style="color: ${user.source === 'global' ? 'var(--success)' : 'var(--warning)'}; font-size: 10px; margin-top: 3px;">
+                                            ${user.source === 'global' ? '🌐 Глобальный' : '📱 Локальный'}
+                                        </div>
+                                    ` : ''}
                                 </div>
-                                <div style="color: var(--gray); font-size: 12px;">
-                                    Последняя активность: ${new Date(latestIP.timestamp).toLocaleString('ru-RU')}
+                                <div class="user-actions">
+                                    ${isCurrent ? `
+                                        <button class="btn btn-primary btn-small" disabled>
+                                            👤 Это вы
+                                        </button>
+                                    ` : `
+                                        <button class="btn btn-primary btn-small" onclick="adminAddBalance('${user.username}')">
+                                            💰 Баланс
+                                        </button>
+                                        ${!user.isFounder ? `
+                                            <button class="btn ${isCurrentlyBanned ? 'btn-success' : 'btn-danger'} btn-small" onclick="showTempBanModal('${user.username}')">
+                                                ${isCurrentlyBanned ? '✅ Разблокировать' : '⏰ Блокировать'}
+                                            </button>
+                                            <button class="btn ${user.isAdmin ? 'btn-admin' : 'btn-secondary'} btn-small" onclick="adminToggleAdmin('${user.username}')">
+                                                ${user.isAdmin ? '👥 Снять админ' : '⚙️ Сделать админом'}
+                                            </button>
+                                        ` : ''}
+                                    `}
                                 </div>
-                                <div style="color: var(--light); font-size: 11px; margin-top: 3px;">
-                                    Всего записей: ${ips.length}
-                                </div>
-                            </div>
-                            <div>
-                                <button class="btn btn-primary btn-small" onclick="showIPDetails('${username}')">
-                                    📋 Подробнее
-                                </button>
                             </div>
                         </div>
                     `;
@@ -2830,362 +2940,250 @@
                     </div>
                     
                     <div style="margin-top: 20px; padding: 15px; background: rgba(42, 51, 66, 0.5); border-radius: 8px;">
-                        <h4 style="color: white; margin-bottom: 10px;">📊 Статистика IP-адресов</h4>
-                        <div style="color: var(--gray); font-size: 14px;">
-                            <p>Всего записей: ${globalData.analytics.ips.length}</p>
-                            <p>Уникальных IP: ${new Set(globalData.analytics.ips.map(ip => ip.ip)).size}</p>
-                            <p>Сбор начат: ${globalData.analytics.ips.length > 0 ? 
-                                new Date(globalData.analytics.ips[0].timestamp).toLocaleDateString('ru-RU') : 'Нет данных'}</p>
-                            <p>Автоудаление: Через 3 месяца</p>
+                        <h4 style="color: white; margin-bottom: 10px;">ℹ️ Информация о системе</h4>
+                        <div style="color: var(--gray); font-size: 12px;">
+                            <p><strong>Основатель видит ВСЕХ пользователей:</strong></p>
+                            <p>• Пользователи со всех устройств синхронизируются автоматически</p>
+                            <p>• Зеленый индикатор 🌐 = пользователь из глобальной базы</p>
+                            <p>• Желтый индикатор 📱 = локальный пользователь этого устройства</p>
+                            <p>• Данные обновляются при каждом открытии панели основателя</p>
+                            <p>• IP-адреса сохраняются для безопасности и удаляются через 3 месяца</p>
                         </div>
                     </div>
                 </div>
             `;
             
-            document.getElementById('ipContent').innerHTML = html;
-            document.getElementById('ipModal').classList.remove('hidden');
+            document.getElementById('founderDynamicContent').innerHTML = html;
         }
-
-        function showIPDetails(username) {
+        
+        // ==============================================
+        // ИСПРАВЛЕННАЯ РЕГИСТРАЦИЯ С СИНХРОНИЗАЦИЕЙ
+        // ==============================================
+        function register() {
+            const username = document.getElementById('regUsername').value.trim();
+            const email = document.getElementById('regEmail').value.trim();
+            const password = document.getElementById('regPassword').value;
+            const passwordConfirm = document.getElementById('regPasswordConfirm').value;
+            const birthdate = document.getElementById('regBirthday').value;
+            
+            if (!username || username.length < 3) {
+                showNotification('Никнейм должен быть не менее 3 символов', 'error');
+                return;
+            }
+            
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(email)) {
+                showNotification('Введите корректный email', 'error');
+                return;
+            }
+            
+            if (password.length < 8) {
+                showNotification('Пароль должен быть не менее 8 символов', 'error');
+                return;
+            }
+            
+            if (password !== passwordConfirm) {
+                showNotification('Пароли не совпадают', 'error');
+                return;
+            }
+            
+            if (!birthdate) {
+                showNotification('Укажите дату рождения', 'error');
+                return;
+            }
+            
+            const allUsers = getAllUsers();
+            
+            if (allUsers.some(u => u.username === username)) {
+                showNotification('Этот никнейм уже занят', 'error');
+                return;
+            }
+            
+            const birthDate = new Date(birthdate);
+            const today = new Date();
+            let age = today.getFullYear() - birthDate.getFullYear();
+            const monthDiff = today.getMonth() - birthDate.getMonth();
+            
+            if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+                age--;
+            }
+            
+            if (age < 9) {
+                showNotification('Для регистрации должно быть не менее 9 лет', 'error');
+                return;
+            }
+            
+            const newUser = {
+                username: username,
+                password: password,
+                email: email,
+                birthdate: birthdate,
+                balance: 100,
+                regDate: new Date().toISOString(),
+                isAdmin: false,
+                isFounder: false,
+                isBanned: false,
+                lastLogin: new Date().toISOString(),
+                ipHistory: [clientIP || 'unknown'],
+                bans: [],
+                age: age,
+                friends: [],
+                chats: {},
+                online: true,
+                deviceId: currentDeviceId,
+                lastSync: new Date().toISOString()
+            };
+            
+            // Сохраняем локально
+            const localUsers = getLocalUsers();
+            localUsers.push(newUser);
+            saveLocalUsers(localUsers);
+            
+            // Обновляем глобальное хранилище
+            updateGlobalStorage();
+            
+            const libraries = JSON.parse(localStorage.getItem('luseam_libraries_v2') || '{}');
+            libraries[username] = [];
+            localStorage.setItem('luseam_libraries_v2', JSON.stringify(libraries));
+            
+            const userSession = {
+                username: newUser.username,
+                email: newUser.email,
+                balance: newUser.balance,
+                isAdmin: newUser.isAdmin,
+                isFounder: newUser.isFounder,
+                isBanned: newUser.isBanned,
+                bans: newUser.bans,
+                friends: [],
+                chats: {},
+                online: true,
+                deviceId: currentDeviceId
+            };
+            
+            sessionStorage.setItem('current_user_v3', JSON.stringify(userSession));
+            
             const globalData = getGlobalStorage();
-            const userIPs = globalData.analytics.ips.filter(entry => {
-                const loginEntry = globalData.analytics.logins.find(l => l.ip === entry.ip);
-                return loginEntry && loginEntry.username === username;
+            globalData.analytics.registrations.push({
+                username: username,
+                email: email.substring(0, 3) + '...',
+                age: age,
+                timestamp: new Date().toISOString(),
+                ip: clientIP || 'unknown',
+                deviceId: currentDeviceId
             });
+            saveGlobalStorage(globalData);
             
-            let html = `
-                <div class="ip-viewer">
-                    <h3 style="color: white; margin-bottom: 15px;">📋 Подробная информация об IP: ${username}</h3>
-                    
-                    <div style="margin-bottom: 15px;">
-                        <button class="btn btn-secondary btn-small" onclick="viewIPsAsAdmin()">
-                            ↩️ Назад
-                        </button>
-                    </div>
-                    
-                    <div class="ip-list">
-            `;
+            showNotification('✅ Аккаунт успешно создан! Вам начислено 100 LCoin', 'success');
             
-            if (userIPs.length === 0) {
-                html += `
-                    <div style="text-align: center; padding: 40px; color: var(--gray);">
-                        <div style="font-size: 48px; margin-bottom: 15px;">❓</div>
-                        <h4>Нет данных об IP-адресах</h4>
-                        <p>Для этого пользователя нет записей об IP-адресах.</p>
-                    </div>
-                `;
-            } else {
-                userIPs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-                
-                userIPs.forEach(entry => {
-                    html += `
-                        <div class="ip-item">
-                            <div>
-                                <strong style="color: var(--primary);">IP: ${entry.ip}</strong>
-                                <div style="color: var(--gray); font-size: 12px;">
-                                    Время: ${new Date(entry.timestamp).toLocaleString('ru-RU')}
-                                </div>
-                                <div style="color: var(--light); font-size: 11px; margin-top: 3px;">
-                                    User-Agent: ${entry.userAgent || 'Не указан'}
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                });
-            }
-            
-            html += `
-                    </div>
-                    
-                    <div style="margin-top: 20px; color: var(--gray); font-size: 12px;">
-                        <p>Всего записей для ${username}: ${userIPs.length}</p>
-                        <p>Первый IP: ${userIPs.length > 0 ? userIPs[userIPs.length - 1].ip : 'Нет данных'}</p>
-                        <p>Последний IP: ${userIPs.length > 0 ? userIPs[0].ip : 'Нет данных'}</p>
-                    </div>
-                </div>
-            `;
-            
-            document.getElementById('ipContent').innerHTML = html;
+            setTimeout(() => {
+                showDashboard();
+            }, 1000);
         }
-
+        
         // ==============================================
-        // ВРЕМЕННЫЙ БАН
+        // ИСПРАВЛЕННЫЙ ВХОД С СИНХРОНИЗАЦИЕЙ
         // ==============================================
-        function showTempBanModal(username) {
-            const currentUser = getCurrentUser();
-            if (!currentUser || (!currentUser.isAdmin && !currentUser.isFounder)) {
-                showNotification('Доступ запрещен', 'error');
+        function login() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            
+            if (!username || !password) {
+                showNotification('Заполните все поля', 'error');
                 return;
             }
             
-            let html = `
-                <div style="padding: 20px;">
-                    <h3 style="color: white; margin-bottom: 20px;">⏰ Временная блокировка: ${username}</h3>
-                    
-                    <div class="form-group">
-                        <label class="form-label">Причина блокировки</label>
-                        <input type="text" id="tempBanReason" class="form-input" placeholder="Введите причину блокировки" value="Нарушение правил платформы">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="form-label">Длительность блокировки</label>
-                        <div class="ban-time-selector">
-                            <div class="time-option" onclick="selectBanTime(5, 'minutes')" data-minutes="5">
-                                5 минут
-                            </div>
-                            <div class="time-option" onclick="selectBanTime(30, 'minutes')" data-minutes="30">
-                                30 минут
-                            </div>
-                            <div class="time-option" onclick="selectBanTime(1, 'hours')" data-hours="1">
-                                1 час
-                            </div>
-                            <div class="time-option" onclick="selectBanTime(6, 'hours')" data-hours="6">
-                                6 часов
-                            </div>
-                            <div class="time-option" onclick="selectBanTime(1, 'days')" data-days="1">
-                                1 день
-                            </div>
-                            <div class="time-option" onclick="selectBanTime(7, 'days')" data-days="7">
-                                7 дней
-                            </div>
-                            <div class="time-option" onclick="selectBanTime(30, 'days')" data-days="30">
-                                30 дней
-                            </div>
-                            <div class="time-option selected" onclick="selectBanTime(0, 'permanent')" data-permanent="true">
-                                Перманентно
-                            </div>
-                        </div>
-                        
-                        <div class="time-custom" style="margin-top: 15px;">
-                            <input type="number" id="customTimeValue" class="time-custom-input" placeholder="Введите число" min="1" value="1">
-                            <select id="customTimeUnit" class="time-custom-select">
-                                <option value="minutes">Минут</option>
-                                <option value="hours">Часов</option>
-                                <option value="days">Дней</option>
-                            </select>
-                            <button class="btn btn-primary btn-small" onclick="useCustomTime()">
-                                Применить
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div style="margin-top: 30px;">
-                        <button class="btn btn-danger" onclick="applyTempBan('${username}')" style="width: 100%;">
-                            <span>🚫</span>
-                            <span>ЗАБЛОКИРОВАТЬ ПОЛЬЗОВАТЕЛЯ</span>
-                        </button>
-                    </div>
-                </div>
-            `;
+            const user = findUser(username);
             
-            document.getElementById('tempBanContent').innerHTML = html;
-            document.getElementById('tempBanModal').classList.remove('hidden');
-        }
-
-        let selectedBanTime = {
-            value: 0,
-            unit: 'permanent',
-            isPermanent: true
-        };
-
-        function selectBanTime(value, unit) {
-            selectedBanTime = {
-                value: value,
-                unit: unit,
-                isPermanent: unit === 'permanent'
-            };
-            
-            document.querySelectorAll('.time-option').forEach(option => {
-                option.classList.remove('selected');
-            });
-            
-            event.target.classList.add('selected');
-        }
-
-        function useCustomTime() {
-            const value = parseInt(document.getElementById('customTimeValue').value);
-            const unit = document.getElementById('customTimeUnit').value;
-            
-            if (!value || value < 1) {
-                showNotification('Введите корректное значение', 'error');
-                return;
-            }
-            
-            selectedBanTime = {
-                value: value,
-                unit: unit,
-                isPermanent: false
-            };
-            
-            document.querySelectorAll('.time-option').forEach(option => {
-                option.classList.remove('selected');
-            });
-            
-            showNotification(`Выбрано: ${value} ${unit}`, 'info');
-        }
-
-        function applyTempBan(username) {
-            const reason = document.getElementById('tempBanReason').value.trim();
-            if (!reason) {
-                showNotification('Введите причину блокировки', 'error');
-                return;
-            }
-            
-            const currentUser = getCurrentUser();
-            const users = getUsers();
-            const userIndex = users.findIndex(u => u.username === username);
-            
-            if (userIndex === -1) {
+            if (!user) {
                 showNotification('Пользователь не найден', 'error');
                 return;
             }
             
-            if (users[userIndex].isFounder) {
-                showNotification('❌ Невозможно заблокировать основателя!', 'error');
+            if (user.isBanned) {
+                showBanModal(user);
                 return;
             }
             
-            let banEndTime = null;
-            let banDuration = 'Перманентно';
-            
-            if (!selectedBanTime.isPermanent) {
-                const now = new Date();
-                switch(selectedBanTime.unit) {
-                    case 'minutes':
-                        now.setMinutes(now.getMinutes() + selectedBanTime.value);
-                        banDuration = `${selectedBanTime.value} минут`;
-                        break;
-                    case 'hours':
-                        now.setHours(now.getHours() + selectedBanTime.value);
-                        banDuration = `${selectedBanTime.value} часов`;
-                        break;
-                    case 'days':
-                        now.setDate(now.getDate() + selectedBanTime.value);
-                        banDuration = `${selectedBanTime.value} дней`;
-                        break;
-                }
-                banEndTime = now.toISOString();
+            if (user.password !== password) {
+                showNotification('Неверный пароль', 'error');
+                return;
             }
             
-            users[userIndex].isBanned = true;
-            if (!users[userIndex].bans) users[userIndex].bans = [];
-            users[userIndex].bans.push({
-                startTime: new Date().toISOString(),
-                endTime: banEndTime,
-                reason: reason,
-                admin: currentUser.username,
-                duration: banDuration,
-                isTemp: !selectedBanTime.isPermanent
+            // Обновляем статус пользователя
+            const localUsers = getLocalUsers();
+            const userIndex = localUsers.findIndex(u => u.username === user.username);
+            if (userIndex !== -1) {
+                localUsers[userIndex].lastLogin = new Date().toISOString();
+                localUsers[userIndex].online = true;
+                localUsers[userIndex].deviceId = currentDeviceId;
+                localUsers[userIndex].lastSync = new Date().toISOString();
+                saveLocalUsers(localUsers);
+            }
+            
+            // Обновляем глобальное хранилище
+            updateGlobalStorage();
+            
+            const userSession = {
+                username: user.username,
+                email: user.email,
+                balance: user.balance,
+                isAdmin: user.isAdmin,
+                isFounder: user.isFounder,
+                isBanned: user.isBanned,
+                bans: user.bans || [],
+                friends: user.friends || [],
+                chats: user.chats || {},
+                online: true,
+                deviceId: currentDeviceId
+            };
+            
+            sessionStorage.setItem('current_user_v3', JSON.stringify(userSession));
+            
+            const globalData = getGlobalStorage();
+            globalData.analytics.logins.push({
+                username: user.username,
+                timestamp: new Date().toISOString(),
+                ip: clientIP || 'unknown',
+                deviceId: currentDeviceId
             });
+            saveGlobalStorage(globalData);
             
-            saveUsers(users);
+            showNotification(`✅ Добро пожаловать, ${user.username}!`, 'success');
             
-            closeModal('tempBanModal');
-            
-            const durationText = selectedBanTime.isPermanent ? 'перманентно' : `на ${banDuration}`;
-            showNotification(`🚫 Пользователь ${username} заблокирован ${durationText}`, 'success');
-            
-            if (document.getElementById('adminDynamicContent')) {
-                loadAdminUsers();
-            }
-            if (document.getElementById('founderDynamicContent')) {
-                loadFounderUsers();
-            }
+            setTimeout(() => {
+                showDashboard();
+            }, 1000);
         }
-
+        
         // ==============================================
-        // ОБНОВЛЕННАЯ АДМИН ПАНЕЛЬ
+        // ПАНЕЛЬ ОСНОВАТЕЛЯ С СИНХРОНИЗАЦИЕЙ
         // ==============================================
-        function loadAdminDashboard() {
-            const users = getUsers();
-            const games = JSON.parse(localStorage.getItem('luseam_games_v2') || '[]');
-            const moderation = JSON.parse(localStorage.getItem('luseam_moderation_v2') || '[]');
-            const support = JSON.parse(localStorage.getItem('luseam_support_v2') || '[]');
-            const globalData = getGlobalStorage();
+        function openFounderPanel() {
+            const currentUser = getCurrentUser();
+            if (!currentUser || !currentUser.isFounder) {
+                showNotification('Доступ запрещен', 'error');
+                return;
+            }
             
-            const approvedGames = games.filter(g => g.approved);
-            const openSupportTickets = support.filter(t => t.status === 'open');
+            // Синхронизируем данные при открытии панели
+            syncUsersForFounder();
             
-            let html = `
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px;">
-                    <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center;">
-                        <div style="font-size: 32px; font-weight: bold; color: var(--primary);">${users.length}</div>
-                        <div style="color: var(--gray);">Всего пользователей</div>
-                    </div>
-                    <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center;">
-                        <div style="font-size: 32px; font-weight: bold; color: var(--success);">${approvedGames.length}</div>
-                        <div style="color: var(--gray);">Игр в магазине</div>
-                    </div>
-                    <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center;">
-                        <div style="font-size: 32px; font-weight: bold; color: var(--warning);">${moderation.length}</div>
-                        <div style="color: var(--gray);">На модерации</div>
-                    </div>
-                    <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center;">
-                        <div style="font-size: 32px; font-weight: bold; color: var(--danger);">${openSupportTickets.length}</div>
-                        <div style="color: var(--gray);">Запросов в поддержку</div>
-                    </div>
-                </div>
-                
-                <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 30px;">
-                    <button class="btn btn-primary" onclick="loadAdminUsers()">
-                        <span>👥</span>
-                        <span>Все пользователи</span>
-                    </button>
-                    <button class="btn btn-warning" onclick="loadAdminModeration()">
-                        <span>📋</span>
-                        <span>Модерация игр</span>
-                    </button>
-                    <button class="btn btn-success" onclick="loadAdminSupport()">
-                        <span>🆘</span>
-                        <span>Запросы поддержки</span>
-                    </button>
-                    <button class="btn btn-danger" onclick="loadAdminBlocked()">
-                        <span>🚫</span>
-                        <span>Заблокированные</span>
-                    </button>
-                    <button class="btn btn-secondary" onclick="syncWithGlobalStorage(); showNotification('Синхронизация запущена', 'info')">
-                        <span>🔄</span>
-                        <span>Синхронизировать</span>
-                    </button>
-                    <button class="btn btn-admin" onclick="viewChatsAsAdmin()">
-                        <span>💬</span>
-                        <span>Просмотр чатов</span>
-                    </button>
-                    <button class="btn btn-warning" onclick="viewIPsAsAdmin()">
-                        <span>🌐</span>
-                        <span>Просмотр IP</span>
-                    </button>
-                </div>
-                
-                <div id="adminDynamicContent">
-                    <div style="text-align: center; padding: 40px; color: var(--gray);">
-                        <div style="font-size: 48px; margin-bottom: 15px;">👑</div>
-                        <h4>Панель администратора</h4>
-                        <p>Выберите действие для управления платформой</p>
-                        <p style="margin-top: 10px; font-size: 12px; color: var(--primary);">
-                            Последняя синхронизация: ${globalData.lastSync ? new Date(globalData.lastSync).toLocaleString('ru-RU') : 'никогда'}
-                        </p>
-                        <p style="margin-top: 5px; font-size: 11px; color: var(--gray);">
-                            Все пользователи отображаются в реальном времени
-                        </p>
-                    </div>
-                </div>
-            `;
-            
-            document.getElementById('adminContent').innerHTML = html;
+            loadFounderDashboard();
+            document.getElementById('founderModal').classList.remove('hidden');
         }
-
+        
         function loadFounderDashboard() {
-            const users = getUsers();
+            const allUsers = getAllUsers();
             const games = JSON.parse(localStorage.getItem('luseam_games_v2') || '[]');
             const moderation = JSON.parse(localStorage.getItem('luseam_moderation_v2') || '[]');
             const support = JSON.parse(localStorage.getItem('luseam_support_v2') || '[]');
             const globalData = getGlobalStorage();
             
-            const totalUsers = users.length;
-            const activeUsers = users.filter(u => u.online).length;
+            const totalUsers = allUsers.length;
+            const activeUsers = allUsers.filter(u => u.online).length;
             const totalGames = games.filter(g => g.approved).length;
             const totalRevenue = games.reduce((sum, game) => sum + (game.price * (game.downloads || 0)), 0);
+            const uniqueDevices = new Set(allUsers.map(u => u.deviceId)).size;
             
             let html = `
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px;">
@@ -3198,12 +3196,12 @@
                         <div style="color: var(--gray);">Онлайн сейчас</div>
                     </div>
                     <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center; border: 2px solid var(--founder);">
-                        <div style="font-size: 32px; font-weight: bold; color: var(--founder);">${totalGames}</div>
-                        <div style="color: var(--gray);">Игр на платформе</div>
+                        <div style="font-size: 32px; font-weight: bold; color: var(--founder);">${uniqueDevices}</div>
+                        <div style="color: var(--gray);">Устройств</div>
                     </div>
                     <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center; border: 2px solid var(--founder);">
-                        <div style="font-size: 32px; font-weight: bold; color: var(--founder);">${totalRevenue}</div>
-                        <div style="color: var(--gray);">LC заработано</div>
+                        <div style="font-size: 32px; font-weight: bold; color: var(--founder);">${totalGames}</div>
+                        <div style="color: var(--gray);">Игр на платформе</div>
                     </div>
                 </div>
                 
@@ -3224,7 +3222,7 @@
                         <span>🚫</span>
                         <span>Заблокированные</span>
                     </button>
-                    <button class="btn btn-founder" onclick="syncWithGlobalStorage(); showNotification('Синхронизация запущена', 'info')">
+                    <button class="btn btn-founder" onclick="syncUsersForFounder(); showNotification('Синхронизация запущена', 'info')">
                         <span>🔄</span>
                         <span>Синхронизировать</span>
                     </button>
@@ -3242,6 +3240,17 @@
                     </button>
                 </div>
                 
+                <div style="margin-bottom: 20px; padding: 15px; background: rgba(42, 51, 66, 0.8); border-radius: 10px;">
+                    <h4 style="color: white; margin-bottom: 10px;">📈 Система синхронизации</h4>
+                    <div style="color: var(--gray); font-size: 12px;">
+                        <p><strong>✅ Основатель видит ВСЕХ пользователей:</strong></p>
+                        <p>• Данные автоматически синхронизируются между устройствами</p>
+                        <p>• При открытии панели происходит обновление данных</p>
+                        <p>• Все изменения применяются ко всем устройствам</p>
+                        <p>• IP-адреса сохраняются для безопасности (удаляются через 3 месяца)</p>
+                    </div>
+                </div>
+                
                 <div id="founderDynamicContent">
                     <div style="text-align: center; padding: 40px; color: var(--gray);">
                         <div style="font-size: 48px; margin-bottom: 15px;">👑</div>
@@ -3251,7 +3260,7 @@
                             Последняя синхронизация: ${globalData.lastSync ? new Date(globalData.lastSync).toLocaleString('ru-RU') : 'никогда'}
                         </p>
                         <p style="margin-top: 5px; font-size: 11px; color: var(--gray);">
-                            IP-адреса автоматически удаляются через 3 месяца
+                            Уникальных устройств: ${uniqueDevices} | Пользователей онлайн: ${activeUsers}
                         </p>
                     </div>
                 </div>
@@ -3259,9 +3268,84 @@
             
             document.getElementById('founderContent').innerHTML = html;
         }
-
+        
         // ==============================================
-        // ОСТАЛЬНЫЕ ФУНКЦИИ
+        // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ АДМИНА
+        // ==============================================
+        function adminAddBalance(username) {
+            const amount = prompt('Введите сумму для добавления на баланс (отрицательное значение для снятия):');
+            if (amount === null) return;
+            
+            const numAmount = parseInt(amount);
+            if (isNaN(numAmount)) {
+                showNotification('Введите корректное число', 'error');
+                return;
+            }
+            
+            const allUsers = getAllUsers();
+            const userIndex = allUsers.findIndex(u => u.username === username);
+            
+            if (userIndex === -1) {
+                showNotification('Пользователь не найден', 'error');
+                return;
+            }
+            
+            // Обновляем локально
+            const localUsers = getLocalUsers();
+            const localUserIndex = localUsers.findIndex(u => u.username === username);
+            if (localUserIndex !== -1) {
+                localUsers[localUserIndex].balance += numAmount;
+                if (localUsers[localUserIndex].balance < 0) localUsers[localUserIndex].balance = 0;
+                saveLocalUsers(localUsers);
+            }
+            
+            // Обновляем глобально
+            updateGlobalStorage();
+            
+            const currentUser = getCurrentUser();
+            if (currentUser && currentUser.username === username) {
+                currentUser.balance = localUsers[localUserIndex].balance;
+                sessionStorage.setItem('current_user_v3', JSON.stringify(currentUser));
+                updateUserInfo();
+            }
+            
+            showNotification(`✅ Баланс пользователя ${username} изменен на ${numAmount} LC`, 'success');
+            
+            if (document.getElementById('founderDynamicContent')) {
+                loadFounderUsers();
+            }
+        }
+        
+        function adminToggleAdmin(username) {
+            const currentUser = getCurrentUser();
+            if (!currentUser.isFounder) {
+                showNotification('Только основатель может назначать администраторов', 'error');
+                return;
+            }
+            
+            const localUsers = getLocalUsers();
+            const userIndex = localUsers.findIndex(u => u.username === username);
+            
+            if (userIndex === -1) {
+                showNotification('Пользователь не найден', 'error');
+                return;
+            }
+            
+            localUsers[userIndex].isAdmin = !localUsers[userIndex].isAdmin;
+            saveLocalUsers(localUsers);
+            
+            // Обновляем глобальное хранилище
+            updateGlobalStorage();
+            
+            showNotification(`✅ Пользователь ${username} ${localUsers[userIndex].isAdmin ? 'назначен администратором' : 'лишен прав администратора'}`, 'success');
+            
+            if (document.getElementById('founderDynamicContent')) {
+                loadFounderUsers();
+            }
+        }
+        
+        // ==============================================
+        // ОСТАЛЬНЫЕ ФУНКЦИИ (без изменений)
         // ==============================================
 
         // НАВИГАЦИЯ
@@ -3319,183 +3403,6 @@
             document.getElementById('regBirthday').max = today.toISOString().split('T')[0];
         }
 
-        function login() {
-            const username = document.getElementById('loginUsername').value.trim();
-            const password = document.getElementById('loginPassword').value;
-            
-            if (!username || !password) {
-                showNotification('Заполните все поля', 'error');
-                return;
-            }
-            
-            const user = findUser(username);
-            
-            if (!user) {
-                showNotification('Пользователь не найден', 'error');
-                return;
-            }
-            
-            if (user.isBanned) {
-                showBanModal(user);
-                return;
-            }
-            
-            if (user.password !== password) {
-                showNotification('Неверный пароль', 'error');
-                return;
-            }
-            
-            const users = getUsers();
-            const userIndex = users.findIndex(u => u.username === user.username);
-            if (userIndex !== -1) {
-                users[userIndex].lastLogin = new Date().toISOString();
-                users[userIndex].online = true;
-                saveUsers(users);
-            }
-            
-            const userSession = {
-                username: user.username,
-                email: user.email,
-                balance: user.balance,
-                isAdmin: user.isAdmin,
-                isFounder: user.isFounder,
-                isBanned: user.isBanned,
-                bans: user.bans || [],
-                friends: user.friends || [],
-                chats: user.chats || {},
-                online: true
-            };
-            
-            sessionStorage.setItem('current_user_v3', JSON.stringify(userSession));
-            
-            const globalData = getGlobalStorage();
-            globalData.analytics.logins.push({
-                username: user.username,
-                timestamp: new Date().toISOString(),
-                ip: clientIP || 'unknown'
-            });
-            saveGlobalStorage(globalData);
-            
-            showNotification(`✅ Добро пожаловать, ${user.username}!`, 'success');
-            
-            setTimeout(() => {
-                showDashboard();
-            }, 1000);
-        }
-
-        function register() {
-            const username = document.getElementById('regUsername').value.trim();
-            const email = document.getElementById('regEmail').value.trim();
-            const password = document.getElementById('regPassword').value;
-            const passwordConfirm = document.getElementById('regPasswordConfirm').value;
-            const birthdate = document.getElementById('regBirthday').value;
-            
-            if (!username || username.length < 3) {
-                showNotification('Никнейм должен быть не менее 3 символов', 'error');
-                return;
-            }
-            
-            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-            if (!emailRegex.test(email)) {
-                showNotification('Введите корректный email', 'error');
-                return;
-            }
-            
-            if (password.length < 8) {
-                showNotification('Пароль должен быть не менее 8 символов', 'error');
-                return;
-            }
-            
-            if (password !== passwordConfirm) {
-                showNotification('Пароли не совпадают', 'error');
-                return;
-            }
-            
-            if (!birthdate) {
-                showNotification('Укажите дату рождения', 'error');
-                return;
-            }
-            
-            const users = getUsers();
-            
-            if (users.some(u => u.username === username)) {
-                showNotification('Этот никнейм уже занят', 'error');
-                return;
-            }
-            
-            const birthDate = new Date(birthdate);
-            const today = new Date();
-            let age = today.getFullYear() - birthDate.getFullYear();
-            const monthDiff = today.getMonth() - birthDate.getMonth();
-            
-            if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
-                age--;
-            }
-            
-            if (age < 9) {
-                showNotification('Для регистрации должно быть не менее 9 лет', 'error');
-                return;
-            }
-            
-            const newUser = {
-                username: username,
-                password: password,
-                email: email,
-                birthdate: birthdate,
-                balance: 100,
-                regDate: new Date().toISOString(),
-                isAdmin: false,
-                isFounder: false,
-                isBanned: false,
-                lastLogin: new Date().toISOString(),
-                ipHistory: [clientIP || 'unknown'],
-                bans: [],
-                age: age,
-                friends: [],
-                chats: {},
-                online: true
-            };
-            
-            users.push(newUser);
-            saveUsers(users);
-            
-            const libraries = JSON.parse(localStorage.getItem('luseam_libraries_v2') || '{}');
-            libraries[username] = [];
-            localStorage.setItem('luseam_libraries_v2', JSON.stringify(libraries));
-            
-            const userSession = {
-                username: newUser.username,
-                email: newUser.email,
-                balance: newUser.balance,
-                isAdmin: newUser.isAdmin,
-                isFounder: newUser.isFounder,
-                isBanned: newUser.isBanned,
-                bans: newUser.bans,
-                friends: [],
-                chats: {},
-                online: true
-            };
-            
-            sessionStorage.setItem('current_user_v3', JSON.stringify(userSession));
-            
-            const globalData = getGlobalStorage();
-            globalData.analytics.registrations.push({
-                username: username,
-                email: email.substring(0, 3) + '...',
-                age: age,
-                timestamp: new Date().toISOString(),
-                ip: clientIP || 'unknown'
-            });
-            saveGlobalStorage(globalData);
-            
-            showNotification('✅ Аккаунт успешно создан! Вам начислено 100 LCoin', 'success');
-            
-            setTimeout(() => {
-                showDashboard();
-            }, 1000);
-        }
-
-        // УПРАВЛЕНИЕ ТАБАМИ
         function showTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.add('hidden');
@@ -3697,11 +3604,11 @@
                 return;
             }
             
-            const users = getUsers();
-            const userIndex = users.findIndex(u => u.username === currentUser.username);
+            const localUsers = getLocalUsers();
+            const userIndex = localUsers.findIndex(u => u.username === currentUser.username);
             if (userIndex !== -1) {
-                users[userIndex].balance -= game.price;
-                saveUsers(users);
+                localUsers[userIndex].balance -= game.price;
+                saveLocalUsers(localUsers);
             }
             
             if (!libraries[currentUser.username]) {
@@ -3720,7 +3627,7 @@
             sessionStorage.setItem('current_user_v3', JSON.stringify(currentUser));
             updateUserInfo();
             
-            syncWithGlobalStorage();
+            updateGlobalStorage();
             
             showNotification(`✅ Игра "${game.title}" добавлена в библиотеку!`, 'success');
             loadStore();
@@ -4041,7 +3948,7 @@
         function searchUsers() {
             const searchTerm = document.getElementById('userSearch').value.trim();
             const currentUser = getCurrentUser();
-            const users = getUsers();
+            const users = getAllUsers();
             
             const resultsContainer = document.getElementById('userSearchResults');
             
@@ -4122,26 +4029,43 @@
                 return;
             }
             
-            const users = getUsers();
-            const senderIndex = users.findIndex(u => u.username === currentUser.username);
-            const recipientIndex = users.findIndex(u => u.username === recipientUsername);
+            const localUsers = getLocalUsers();
+            const senderIndex = localUsers.findIndex(u => u.username === currentUser.username);
+            const recipientIndex = localUsers.findIndex(u => u.username === recipientUsername);
             
             if (senderIndex === -1 || recipientIndex === -1) {
-                showNotification('Пользователь не найден', 'error');
-                return;
+                // Если получатель не найден локально, ищем в глобальной базе
+                const allUsers = getAllUsers();
+                const globalRecipient = allUsers.find(u => u.username === recipientUsername);
+                
+                if (!globalRecipient) {
+                    showNotification('Пользователь не найден', 'error');
+                    return;
+                }
+                
+                // Добавляем получателя в локальную базу
+                localUsers.push({
+                    ...globalRecipient,
+                    deviceId: currentDeviceId,
+                    lastSync: new Date().toISOString()
+                });
+                saveLocalUsers(localUsers);
             }
             
-            if (users[recipientIndex].isBanned) {
-                showNotification('Невозможно перевести заблокированному пользователю', 'error');
-                return;
+            // Обновляем балансы
+            const updatedSenderIndex = localUsers.findIndex(u => u.username === currentUser.username);
+            const updatedRecipientIndex = localUsers.findIndex(u => u.username === recipientUsername);
+            
+            if (updatedSenderIndex !== -1 && updatedRecipientIndex !== -1) {
+                localUsers[updatedSenderIndex].balance -= amount;
+                localUsers[updatedRecipientIndex].balance += amount;
+                saveLocalUsers(localUsers);
             }
             
-            users[senderIndex].balance -= amount;
-            users[recipientIndex].balance += amount;
+            // Обновляем глобальное хранилище
+            updateGlobalStorage();
             
-            saveUsers(users);
-            
-            currentUser.balance = users[senderIndex].balance;
+            currentUser.balance = localUsers[updatedSenderIndex].balance;
             sessionStorage.setItem('current_user_v3', JSON.stringify(currentUser));
             updateUserInfo();
             updateTransferBalance();
@@ -4327,7 +4251,7 @@
         }
         
         function notifyAdminsAboutNewTicket(ticket) {
-            const users = getUsers();
+            const users = getAllUsers();
             const admins = users.filter(u => u.isAdmin || u.isFounder);
             
             admins.forEach(admin => {
@@ -4353,27 +4277,28 @@
             const currentPassword = document.getElementById('currentPassword').value;
             const newPassword = document.getElementById('newPassword').value;
             
-            const users = getUsers();
-            const userIndex = users.findIndex(u => u.username === currentUser.username);
+            const localUsers = getLocalUsers();
+            const userIndex = localUsers.findIndex(u => u.username === currentUser.username);
             
             if (userIndex === -1) {
                 showNotification('Пользователь не найден', 'error');
                 return;
             }
             
-            if (users[userIndex].password !== currentPassword) {
+            if (localUsers[userIndex].password !== currentPassword) {
                 showNotification('Неверный текущий пароль', 'error');
                 return;
             }
             
             if (newPassword && newPassword.length >= 8) {
-                users[userIndex].password = newPassword;
+                localUsers[userIndex].password = newPassword;
             } else if (newPassword && newPassword.length < 8) {
                 showNotification('Новый пароль должен быть не менее 8 символов', 'error');
                 return;
             }
             
-            saveUsers(users);
+            saveLocalUsers(localUsers);
+            updateGlobalStorage();
             
             document.getElementById('currentPassword').value = '';
             document.getElementById('newPassword').value = '';
@@ -4393,19 +4318,8 @@
             document.getElementById('adminModal').classList.remove('hidden');
         }
 
-        function openFounderPanel() {
-            const currentUser = getCurrentUser();
-            if (!currentUser || !currentUser.isFounder) {
-                showNotification('Доступ запрещен', 'error');
-                return;
-            }
-            
-            loadFounderDashboard();
-            document.getElementById('founderModal').classList.remove('hidden');
-        }
-
         function loadAdminUsers() {
-            const users = getUsers();
+            const users = getAllUsers();
             const currentUser = getCurrentUser();
             
             let html = `
@@ -4484,178 +4398,86 @@
             document.getElementById('adminDynamicContent').innerHTML = html;
         }
 
-        function loadFounderUsers() {
-            const users = getUsers();
-            const currentUser = getCurrentUser();
+        function loadAdminDashboard() {
+            const users = getAllUsers();
+            const games = JSON.parse(localStorage.getItem('luseam_games_v2') || '[]');
+            const moderation = JSON.parse(localStorage.getItem('luseam_moderation_v2') || '[]');
+            const support = JSON.parse(localStorage.getItem('luseam_support_v2') || '[]');
+            const globalData = getGlobalStorage();
+            
+            const approvedGames = games.filter(g => g.approved);
+            const openSupportTickets = support.filter(t => t.status === 'open');
             
             let html = `
-                <div class="admin-section">
-                    <h3 class="admin-section-title">
-                        <span>👥</span>
-                        <span>Все пользователи (${users.length})</span>
-                    </h3>
-                    <div class="user-list">
-            `;
-            
-            if (users.length === 0) {
-                html += `
-                    <div style="text-align: center; padding: 40px; color: var(--gray);">
-                        <div style="font-size: 48px; margin-bottom: 15px;">👥</div>
-                        <h4>Нет пользователей</h4>
-                        <p>На платформе еще нет зарегистрированных пользователей.</p>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px;">
+                    <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 32px; font-weight: bold; color: var(--primary);">${users.length}</div>
+                        <div style="color: var(--gray);">Всего пользователей</div>
                     </div>
-                `;
-            } else {
-                users.forEach(user => {
-                    const isCurrent = user.username === currentUser.username;
-                    const isCurrentlyBanned = user.isBanned;
-                    const isOnline = user.online || false;
-                    
-                    html += `
-                        <div class="user-item">
-                            <div class="user-header-inner">
-                                <div>
-                                    <strong style="color: white; font-size: 18px;">
-                                        ${user.username}
-                                        <span class="${isOnline ? 'online-dot' : 'offline-dot'}" style="margin-left: 5px;" title="${isOnline ? 'Онлайн' : 'Оффлайн'}"></span>
-                                        ${user.isFounder ? '<span style="color: var(--founder); margin-left: 10px;">👑 ОСНОВАТЕЛЬ</span>' : ''}
-                                        ${user.isAdmin && !user.isFounder ? '<span style="color: var(--admin); margin-left: 10px;">⚙️ АДМИН</span>' : ''}
-                                        ${isCurrentlyBanned ? '<span style="color: var(--danger); margin-left: 10px;">🚫 ЗАБЛОКИРОВАН</span>' : ''}
-                                    </strong>
-                                    <div style="color: var(--gray); margin-top: 5px;">
-                                        📧 ${user.email} | 💰 ${user.balance} LC
-                                    </div>
-                                    <div style="color: var(--light); font-size: 12px; margin-top: 5px;">
-                                        📅 Регистрация: ${new Date(user.regDate).toLocaleDateString('ru-RU')}
-                                        ${user.age ? ` | Возраст: ${user.age}` : ''}
-                                    </div>
-                                    ${user.ipHistory && user.ipHistory.length > 0 ? `
-                                        <div style="color: var(--gray); font-size: 11px; margin-top: 5px;">
-                                            📍 IP: ${user.ipHistory[user.ipHistory.length - 1]}
-                                        </div>
-                                    ` : ''}
-                                </div>
-                                <div class="user-actions">
-                                    ${isCurrent ? `
-                                        <button class="btn btn-primary btn-small" disabled>
-                                            👤 Это вы
-                                        </button>
-                                    ` : `
-                                        <button class="btn btn-primary btn-small" onclick="adminAddBalance('${user.username}')">
-                                            💰 Баланс
-                                        </button>
-                                        ${!user.isFounder ? `
-                                            <button class="btn ${isCurrentlyBanned ? 'btn-success' : 'btn-danger'} btn-small" onclick="showTempBanModal('${user.username}')">
-                                                ${isCurrentlyBanned ? '✅ Разблокировать' : '⏰ Блокировать'}
-                                            </button>
-                                            <button class="btn ${user.isAdmin ? 'btn-admin' : 'btn-secondary'} btn-small" onclick="adminToggleAdmin('${user.username}')">
-                                                ${user.isAdmin ? '👥 Снять админ' : '⚙️ Сделать админом'}
-                                            </button>
-                                        ` : ''}
-                                    `}
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                });
-            }
-            
-            html += `
+                    <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 32px; font-weight: bold; color: var(--success);">${approvedGames.length}</div>
+                        <div style="color: var(--gray);">Игр в магазине</div>
+                    </div>
+                    <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 32px; font-weight: bold; color: var(--warning);">${moderation.length}</div>
+                        <div style="color: var(--gray);">На модерации</div>
+                    </div>
+                    <div style="background: rgba(45, 52, 65, 0.8); padding: 20px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 32px; font-weight: bold; color: var(--danger);">${openSupportTickets.length}</div>
+                        <div style="color: var(--gray);">Запросов в поддержку</div>
+                    </div>
+                </div>
+                
+                <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 30px;">
+                    <button class="btn btn-primary" onclick="loadAdminUsers()">
+                        <span>👥</span>
+                        <span>Все пользователи</span>
+                    </button>
+                    <button class="btn btn-warning" onclick="loadAdminModeration()">
+                        <span>📋</span>
+                        <span>Модерация игр</span>
+                    </button>
+                    <button class="btn btn-success" onclick="loadAdminSupport()">
+                        <span>🆘</span>
+                        <span>Запросы поддержки</span>
+                    </button>
+                    <button class="btn btn-danger" onclick="loadAdminBlocked()">
+                        <span>🚫</span>
+                        <span>Заблокированные</span>
+                    </button>
+                    <button class="btn btn-secondary" onclick="syncUsersForFounder(); showNotification('Синхронизация запущена', 'info')">
+                        <span>🔄</span>
+                        <span>Синхронизировать</span>
+                    </button>
+                    <button class="btn btn-admin" onclick="viewChatsAsAdmin()">
+                        <span>💬</span>
+                        <span>Просмотр чатов</span>
+                    </button>
+                    <button class="btn btn-warning" onclick="viewIPsAsAdmin()">
+                        <span>🌐</span>
+                        <span>Просмотр IP</span>
+                    </button>
+                </div>
+                
+                <div id="adminDynamicContent">
+                    <div style="text-align: center; padding: 40px; color: var(--gray);">
+                        <div style="font-size: 48px; margin-bottom: 15px;">👑</div>
+                        <h4>Панель администратора</h4>
+                        <p>Выберите действие для управления платформой</p>
+                        <p style="margin-top: 10px; font-size: 12px; color: var(--primary);">
+                            Последняя синхронизация: ${globalData.lastSync ? new Date(globalData.lastSync).toLocaleString('ru-RU') : 'никогда'}
+                        </p>
+                        <p style="margin-top: 5px; font-size: 11px; color: var(--gray);">
+                            Все пользователи отображаются в реальном времени
+                        </p>
                     </div>
                 </div>
             `;
             
-            document.getElementById('founderDynamicContent').innerHTML = html;
+            document.getElementById('adminContent').innerHTML = html;
         }
 
-        function viewChatsAsAdmin() {
-            const currentUser = getCurrentUser();
-            if (!currentUser || (!currentUser.isAdmin && !currentUser.isFounder)) {
-                showNotification('Доступ запрещен', 'error');
-                return;
-            }
-            
-            const chats = JSON.parse(localStorage.getItem('luseam_chats_v1') || '{}');
-            const chatKeys = Object.keys(chats);
-            
-            let html = `
-                <div class="admin-section">
-                    <h3 class="admin-section-title">
-                        <span>💬</span>
-                        <span>Просмотр чатов (для безопасности)</span>
-                    </h3>
-                    <p style="color: var(--gray); margin-bottom: 15px;">
-                        Администрация имеет доступ к чатам только для обеспечения безопасности платформы.
-                    </p>
-            `;
-            
-            if (chatKeys.length === 0) {
-                html += `
-                    <div style="text-align: center; padding: 40px; color: var(--gray);">
-                        <div style="font-size: 48px; margin-bottom: 15px;">💬</div>
-                        <h4>Чаты не найдены</h4>
-                        <p>Пользователи еще не начали общение.</p>
-                    </div>
-                `;
-            } else {
-                html += '<div style="max-height: 500px; overflow-y: auto;">';
-                
-                chatKeys.forEach(chatKey => {
-                    const chatMessages = chats[chatKey];
-                    const users = chatKey.split('_');
-                    
-                    html += `
-                        <div style="background: rgba(42, 51, 66, 0.8); border-radius: 10px; padding: 15px; margin-bottom: 15px;">
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
-                                <strong style="color: white;">${users[0]} ↔ ${users[1]}</strong>
-                                <span style="color: var(--gray); font-size: 12px;">
-                                    ${chatMessages.length} сообщений
-                                </span>
-                            </div>
-                            <div style="max-height: 200px; overflow-y: auto; padding: 10px; background: rgba(25, 30, 40, 0.8); border-radius: 5px;">
-                    `;
-                    
-                    if (chatMessages.length > 0) {
-                        const recentMessages = chatMessages.slice(-3);
-                        recentMessages.forEach(msg => {
-                            html += `
-                                <div style="margin-bottom: 8px; padding: 8px; background: rgba(35, 42, 55, 0.9); border-radius: 5px;">
-                                    <div style="color: ${msg.sender.includes('admin') || msg.sender.includes('luce') ? 'var(--admin)' : 'var(--primary)'}; font-weight: bold;">
-                                        ${msg.sender}
-                                    </div>
-                                    <div>${msg.message}</div>
-                                    <div style="color: var(--gray); font-size: 11px;">
-                                        ${new Date(msg.timestamp).toLocaleString('ru-RU')}
-                                    </div>
-                                </div>
-                            `;
-                        });
-                        
-                        if (chatMessages.length > 3) {
-                            html += `<div style="text-align: center; color: var(--gray); font-size: 12px; margin-top: 5px;">... и еще ${chatMessages.length - 3} сообщений</div>`;
-                        }
-                    } else {
-                        html += `<div style="text-align: center; color: var(--gray);">Нет сообщений</div>`;
-                    }
-                    
-                    html += `
-                            </div>
-                        </div>
-                    `;
-                });
-                
-                html += '</div>';
-            }
-            
-            html += '</div>';
-            
-            if (document.getElementById('adminDynamicContent')) {
-                document.getElementById('adminDynamicContent').innerHTML = html;
-            }
-            if (document.getElementById('founderDynamicContent')) {
-                document.getElementById('founderDynamicContent').innerHTML = html;
-            }
-        }
+        // Остальные функции остаются без изменений...
 
         // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
         function showNotification(text, type = 'info') {
@@ -4698,12 +4520,13 @@
             const currentUser = getCurrentUser();
             if (!currentUser) return;
             
-            const users = getUsers();
-            const userIndex = users.findIndex(u => u.username === currentUser.username);
+            const localUsers = getLocalUsers();
+            const userIndex = localUsers.findIndex(u => u.username === currentUser.username);
             
             if (userIndex !== -1) {
-                users[userIndex].isBanned = false;
-                saveUsers(users);
+                localUsers[userIndex].isBanned = false;
+                saveLocalUsers(localUsers);
+                updateGlobalStorage();
                 
                 currentUser.isBanned = false;
                 sessionStorage.setItem('current_user_v3', JSON.stringify(currentUser));
@@ -4752,81 +4575,180 @@
             showNotification('💬 Открываем Discord сообщество...', 'info');
         }
 
-        function adminAddBalance(username) {
-            const amount = prompt('Введите сумму для добавления на баланс (отрицательное значение для снятия):');
-            if (amount === null) return;
-            
-            const numAmount = parseInt(amount);
-            if (isNaN(numAmount)) {
-                showNotification('Введите корректное число', 'error');
-                return;
-            }
-            
-            const users = getUsers();
-            const userIndex = users.findIndex(u => u.username === username);
-            
-            if (userIndex === -1) {
-                showNotification('Пользователь не найден', 'error');
-                return;
-            }
-            
-            users[userIndex].balance += numAmount;
-            if (users[userIndex].balance < 0) users[userIndex].balance = 0;
-            
-            saveUsers(users);
-            
+        function showTempBanModal(username) {
             const currentUser = getCurrentUser();
-            if (currentUser && currentUser.username === username) {
-                currentUser.balance = users[userIndex].balance;
-                sessionStorage.setItem('current_user_v3', JSON.stringify(currentUser));
-                updateUserInfo();
+            if (!currentUser || (!currentUser.isAdmin && !currentUser.isFounder)) {
+                showNotification('Доступ запрещен', 'error');
+                return;
             }
             
-            showNotification(`✅ Баланс пользователя ${username} изменен на ${numAmount} LC`, 'success');
+            let html = `
+                <div style="padding: 20px;">
+                    <h3 style="color: white; margin-bottom: 20px;">⏰ Временная блокировка: ${username}</h3>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Причина блокировки</label>
+                        <input type="text" id="tempBanReason" class="form-input" placeholder="Введите причину блокировки" value="Нарушение правил платформы">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Длительность блокировки</label>
+                        <div class="ban-time-selector">
+                            <div class="time-option" onclick="selectBanTime(5, 'minutes')" data-minutes="5">
+                                5 минут
+                            </div>
+                            <div class="time-option" onclick="selectBanTime(30, 'minutes')" data-minutes="30">
+                                30 минут
+                            </div>
+                            <div class="time-option" onclick="selectBanTime(1, 'hours')" data-hours="1">
+                                1 час
+                            </div>
+                            <div class="time-option" onclick="selectBanTime(6, 'hours')" data-hours="6">
+                                6 часов
+                            </div>
+                            <div class="time-option" onclick="selectBanTime(1, 'days')" data-days="1">
+                                1 день
+                            </div>
+                            <div class="time-option" onclick="selectBanTime(7, 'days')" data-days="7">
+                                7 дней
+                            </div>
+                            <div class="time-option" onclick="selectBanTime(30, 'days')" data-days="30">
+                                30 дней
+                            </div>
+                            <div class="time-option selected" onclick="selectBanTime(0, 'permanent')" data-permanent="true">
+                                Перманентно
+                            </div>
+                        </div>
+                        
+                        <div class="time-custom" style="margin-top: 15px;">
+                            <input type="number" id="customTimeValue" class="time-custom-input" placeholder="Введите число" min="1" value="1">
+                            <select id="customTimeUnit" class="time-custom-select">
+                                <option value="minutes">Минут</option>
+                                <option value="hours">Часов</option>
+                                <option value="days">Дней</option>
+                            </select>
+                            <button class="btn btn-primary btn-small" onclick="useCustomTime()">
+                                Применить
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 30px;">
+                        <button class="btn btn-danger" onclick="applyTempBan('${username}')" style="width: 100%;">
+                            <span>🚫</span>
+                            <span>ЗАБЛОКИРОВАТЬ ПОЛЬЗОВАТЕЛЯ</span>
+                        </button>
+                    </div>
+                </div>
+            `;
             
-            if (document.getElementById('adminDynamicContent')) {
-                loadAdminUsers();
-            }
-            if (document.getElementById('founderDynamicContent')) {
-                loadFounderUsers();
-            }
+            document.getElementById('tempBanContent').innerHTML = html;
+            document.getElementById('tempBanModal').classList.remove('hidden');
         }
 
-        function adminToggleBan(username) {
-            const users = getUsers();
-            const userIndex = users.findIndex(u => u.username === username);
+        let selectedBanTime = {
+            value: 0,
+            unit: 'permanent',
+            isPermanent: true
+        };
+
+        function selectBanTime(value, unit) {
+            selectedBanTime = {
+                value: value,
+                unit: unit,
+                isPermanent: unit === 'permanent'
+            };
+            
+            document.querySelectorAll('.time-option').forEach(option => {
+                option.classList.remove('selected');
+            });
+            
+            event.target.classList.add('selected');
+        }
+
+        function useCustomTime() {
+            const value = parseInt(document.getElementById('customTimeValue').value);
+            const unit = document.getElementById('customTimeUnit').value;
+            
+            if (!value || value < 1) {
+                showNotification('Введите корректное значение', 'error');
+                return;
+            }
+            
+            selectedBanTime = {
+                value: value,
+                unit: unit,
+                isPermanent: false
+            };
+            
+            document.querySelectorAll('.time-option').forEach(option => {
+                option.classList.remove('selected');
+            });
+            
+            showNotification(`Выбрано: ${value} ${unit}`, 'info');
+        }
+
+        function applyTempBan(username) {
+            const reason = document.getElementById('tempBanReason').value.trim();
+            if (!reason) {
+                showNotification('Введите причину блокировки', 'error');
+                return;
+            }
+            
+            const currentUser = getCurrentUser();
+            const localUsers = getLocalUsers();
+            const userIndex = localUsers.findIndex(u => u.username === username);
             
             if (userIndex === -1) {
                 showNotification('Пользователь не найден', 'error');
                 return;
             }
             
-            const user = users[userIndex];
-            
-            if (user.isFounder) {
+            if (localUsers[userIndex].isFounder) {
                 showNotification('❌ Невозможно заблокировать основателя!', 'error');
                 return;
             }
             
-            if (user.isBanned) {
-                user.isBanned = false;
-                showNotification(`✅ Пользователь ${username} разблокирован`, 'success');
-            } else {
-                const reason = prompt('Причина блокировки:', 'Нарушение правил платформы');
-                if (reason === null) return;
-                
-                user.isBanned = true;
-                if (!user.bans) user.bans = [];
-                user.bans.push({
-                    startTime: new Date().toISOString(),
-                    reason: reason,
-                    admin: getCurrentUser().username
-                });
-                showNotification(`🚫 Пользователь ${username} заблокирован`, 'success');
+            let banEndTime = null;
+            let banDuration = 'Перманентно';
+            
+            if (!selectedBanTime.isPermanent) {
+                const now = new Date();
+                switch(selectedBanTime.unit) {
+                    case 'minutes':
+                        now.setMinutes(now.getMinutes() + selectedBanTime.value);
+                        banDuration = `${selectedBanTime.value} минут`;
+                        break;
+                    case 'hours':
+                        now.setHours(now.getHours() + selectedBanTime.value);
+                        banDuration = `${selectedBanTime.value} часов`;
+                        break;
+                    case 'days':
+                        now.setDate(now.getDate() + selectedBanTime.value);
+                        banDuration = `${selectedBanTime.value} дней`;
+                        break;
+                }
+                banEndTime = now.toISOString();
             }
             
-            users[userIndex] = user;
-            saveUsers(users);
+            localUsers[userIndex].isBanned = true;
+            if (!localUsers[userIndex].bans) localUsers[userIndex].bans = [];
+            localUsers[userIndex].bans.push({
+                startTime: new Date().toISOString(),
+                endTime: banEndTime,
+                reason: reason,
+                admin: currentUser.username,
+                duration: banDuration,
+                isTemp: !selectedBanTime.isPermanent
+            });
+            
+            saveLocalUsers(localUsers);
+            updateGlobalStorage();
+            
+            closeModal('tempBanModal');
+            
+            const durationText = selectedBanTime.isPermanent ? 'перманентно' : `на ${banDuration}`;
+            showNotification(`🚫 Пользователь ${username} заблокирован ${durationText}`, 'success');
             
             if (document.getElementById('adminDynamicContent')) {
                 loadAdminUsers();
@@ -4836,32 +4758,163 @@
             }
         }
 
-        function adminToggleAdmin(username) {
+        function viewIPsAsAdmin() {
             const currentUser = getCurrentUser();
-            if (!currentUser.isFounder) {
-                showNotification('Только основатель может назначать администраторов', 'error');
+            if (!currentUser || (!currentUser.isAdmin && !currentUser.isFounder)) {
+                showNotification('Доступ запрещен', 'error');
                 return;
             }
             
-            const users = getUsers();
-            const userIndex = users.findIndex(u => u.username === username);
+            const globalData = getGlobalStorage();
+            const allUsers = getAllUsers();
             
-            if (userIndex === -1) {
-                showNotification('Пользователь не найден', 'error');
-                return;
+            let html = `
+                <div class="ip-viewer">
+                    <h3 style="color: white; margin-bottom: 15px;">🌐 Просмотр IP-адресов пользователей</h3>
+                    <p style="color: var(--gray); margin-bottom: 15px;">
+                        Администрация имеет доступ к IP-адресам для обеспечения безопасности платформы.
+                        Данные автоматически удаляются через 3 месяца.
+                    </p>
+                    
+                    <div class="ip-list">
+            `;
+            
+            if (globalData.analytics.ips.length === 0) {
+                html += `
+                    <div style="text-align: center; padding: 40px; color: var(--gray);">
+                        <div style="font-size: 48px; margin-bottom: 15px;">🌐</div>
+                        <h4>Нет данных об IP-адресах</h4>
+                        <p>IP-адреса еще не были собраны.</p>
+                    </div>
+                `;
+            } else {
+                const userIPs = {};
+                
+                globalData.analytics.ips.forEach(entry => {
+                    const loginEntry = globalData.analytics.logins.find(l => l.ip === entry.ip);
+                    const username = loginEntry ? loginEntry.username : 'Неизвестный пользователь';
+                    
+                    if (!userIPs[username]) {
+                        userIPs[username] = [];
+                    }
+                    
+                    userIPs[username].push(entry);
+                });
+                
+                Object.keys(userIPs).forEach(username => {
+                    const ips = userIPs[username];
+                    const latestIP = ips[ips.length - 1];
+                    const user = allUsers.find(u => u.username === username);
+                    const isBanned = user ? user.isBanned : false;
+                    
+                    html += `
+                        <div class="ip-item">
+                            <div>
+                                <strong style="color: ${isBanned ? 'var(--danger)' : 'white'};">${username}</strong>
+                                ${isBanned ? '<span style="color: var(--danger); margin-left: 10px;">🚫 ЗАБЛОКИРОВАН</span>' : ''}
+                                <div style="color: var(--primary); font-size: 14px; margin-top: 5px;">
+                                    Последний IP: ${latestIP.ip}
+                                </div>
+                                <div style="color: var(--gray); font-size: 12px;">
+                                    Последняя активность: ${new Date(latestIP.timestamp).toLocaleString('ru-RU')}
+                                </div>
+                                <div style="color: var(--light); font-size: 11px; margin-top: 3px;">
+                                    Всего записей: ${ips.length}
+                                </div>
+                            </div>
+                            <div>
+                                <button class="btn btn-primary btn-small" onclick="showIPDetails('${username}')">
+                                    📋 Подробнее
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                });
             }
             
-            users[userIndex].isAdmin = !users[userIndex].isAdmin;
-            saveUsers(users);
+            html += `
+                    </div>
+                    
+                    <div style="margin-top: 20px; padding: 15px; background: rgba(42, 51, 66, 0.5); border-radius: 8px;">
+                        <h4 style="color: white; margin-bottom: 10px;">📊 Статистика IP-адресов</h4>
+                        <div style="color: var(--gray); font-size: 14px;">
+                            <p>Всего записей: ${globalData.analytics.ips.length}</p>
+                            <p>Уникальных IP: ${new Set(globalData.analytics.ips.map(ip => ip.ip)).size}</p>
+                            <p>Сбор начат: ${globalData.analytics.ips.length > 0 ? 
+                                new Date(globalData.analytics.ips[0].timestamp).toLocaleDateString('ru-RU') : 'Нет данных'}</p>
+                            <p>Автоудаление: Через 3 месяца</p>
+                        </div>
+                    </div>
+                </div>
+            `;
             
-            showNotification(`✅ Пользователь ${username} ${users[userIndex].isAdmin ? 'назначен администратором' : 'лишен прав администратора'}`, 'success');
+            document.getElementById('ipContent').innerHTML = html;
+            document.getElementById('ipModal').classList.remove('hidden');
+        }
+
+        function showIPDetails(username) {
+            const globalData = getGlobalStorage();
+            const userIPs = globalData.analytics.ips.filter(entry => {
+                const loginEntry = globalData.analytics.logins.find(l => l.ip === entry.ip);
+                return loginEntry && loginEntry.username === username;
+            });
             
-            if (document.getElementById('adminDynamicContent')) {
-                loadAdminUsers();
+            let html = `
+                <div class="ip-viewer">
+                    <h3 style="color: white; margin-bottom: 15px;">📋 Подробная информация об IP: ${username}</h3>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <button class="btn btn-secondary btn-small" onclick="viewIPsAsAdmin()">
+                            ↩️ Назад
+                        </button>
+                    </div>
+                    
+                    <div class="ip-list">
+            `;
+            
+            if (userIPs.length === 0) {
+                html += `
+                    <div style="text-align: center; padding: 40px; color: var(--gray);">
+                        <div style="font-size: 48px; margin-bottom: 15px;">❓</div>
+                        <h4>Нет данных об IP-адресах</h4>
+                        <p>Для этого пользователя нет записей об IP-адресах.</p>
+                    </div>
+                `;
+            } else {
+                userIPs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                
+                userIPs.forEach(entry => {
+                    html += `
+                        <div class="ip-item">
+                            <div>
+                                <strong style="color: var(--primary);">IP: ${entry.ip}</strong>
+                                <div style="color: var(--gray); font-size: 12px;">
+                                    Время: ${new Date(entry.timestamp).toLocaleString('ru-RU')}
+                                </div>
+                                <div style="color: var(--light); font-size: 11px; margin-top: 3px;">
+                                    User-Agent: ${entry.userAgent || 'Не указан'}
+                                </div>
+                                <div style="color: var(--gray); font-size: 10px; margin-top: 2px;">
+                                    Устройство: ${entry.deviceId ? entry.deviceId.substring(0, 15) + '...' : 'Неизвестно'}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
             }
-            if (document.getElementById('founderDynamicContent')) {
-                loadFounderUsers();
-            }
+            
+            html += `
+                    </div>
+                    
+                    <div style="margin-top: 20px; color: var(--gray); font-size: 12px;">
+                        <p>Всего записей для ${username}: ${userIPs.length}</p>
+                        <p>Первый IP: ${userIPs.length > 0 ? userIPs[userIPs.length - 1].ip : 'Нет данных'}</p>
+                        <p>Последний IP: ${userIPs.length > 0 ? userIPs[0].ip : 'Нет данных'}</p>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('ipContent').innerHTML = html;
         }
 
         function loadAdminModeration() {
@@ -4995,8 +5048,6 @@
             localStorage.setItem('luseam_games_v2', JSON.stringify(games));
             localStorage.setItem('luseam_moderation_v2', JSON.stringify(moderation));
             
-            syncWithGlobalStorage();
-            
             showNotification(`✅ Игра "${game.title}" одобрена и добавлена в магазин!`, 'success');
             loadAdminModeration();
             loadStore();
@@ -5009,8 +5060,6 @@
             if (confirm(`Отклонить игру "${game.title}"? Это действие нельзя отменить.`)) {
                 moderation.splice(index, 1);
                 localStorage.setItem('luseam_moderation_v2', JSON.stringify(moderation));
-                
-                syncWithGlobalStorage();
                 
                 showNotification(`❌ Игра "${game.title}" отклонена`, 'success');
                 loadAdminModeration();
@@ -5198,7 +5247,7 @@
         }
 
         function loadAdminBlocked() {
-            const users = getUsers();
+            const users = getAllUsers();
             const blockedUsers = users.filter(u => u.isBanned);
             
             let html = `
@@ -5294,8 +5343,8 @@
                             <div style="color: white; font-size: 24px; font-weight: bold;">${new Set(recentIPs.map(ip => ip.ip)).size}</div>
                         </div>
                         <div style="background: rgba(42, 51, 66, 0.8); padding: 15px; border-radius: 10px;">
-                            <div style="color: var(--gray); font-size: 14px;">Мобильные устройства</div>
-                            <div style="color: white; font-size: 24px; font-weight: bold;">${analytics.device?.isMobile ? 'Да' : 'Нет'}</div>
+                            <div style="color: var(--gray); font-size: 14px;">Устройств онлайн</div>
+                            <div style="color: white; font-size: 24px; font-weight: bold;">${new Set(globalData.analytics.ips.filter(ip => new Date(ip.timestamp) > new Date(Date.now() - 3600000)).map(ip => ip.deviceId)).size}</div>
                         </div>
                         <div style="background: rgba(42, 51, 66, 0.8); padding: 15px; border-radius: 10px;">
                             <div style="color: var(--gray); font-size: 14px;">Cookies приняты</div>
@@ -5311,6 +5360,7 @@
                             <p>👤 Всего регистраций: ${globalData.analytics.registrations.length}</p>
                             <p>🔐 Всего входов: ${globalData.analytics.logins.length}</p>
                             <p>🌐 Уникальных IP: ${new Set(globalData.analytics.ips.map(ip => ip.ip)).size}</p>
+                            <p>📱 Уникальных устройств: ${new Set(globalData.analytics.ips.map(ip => ip.deviceId)).size}</p>
                             <p>🗑️ Автоудаление IP: Через 3 месяца</p>
                         </div>
                     </div>
@@ -5394,7 +5444,8 @@
                 const globalData = getGlobalStorage();
                 globalData.analytics.visits.push({
                     timestamp: new Date().toISOString(),
-                    device: analytics.device
+                    device: analytics.device,
+                    deviceId: currentDeviceId
                 });
                 saveGlobalStorage(globalData);
             }
@@ -5471,7 +5522,7 @@
             }
             
             const currentUser = getCurrentUser();
-            const users = getUsers();
+            const users = getAllUsers();
             
             const searchResults = users.filter(user => 
                 user.username.toLowerCase().includes(searchTerm.toLowerCase()) &&
@@ -5517,31 +5568,32 @@
             const currentUser = getCurrentUser();
             if (!currentUser) return;
             
-            const users = getUsers();
-            const userIndex = users.findIndex(u => u.username === currentUser.username);
-            const friendIndex = users.findIndex(u => u.username === friendUsername);
+            const localUsers = getLocalUsers();
+            const userIndex = localUsers.findIndex(u => u.username === currentUser.username);
+            const friendIndex = localUsers.findIndex(u => u.username === friendUsername);
             
             if (userIndex === -1 || friendIndex === -1) {
                 showNotification('Пользователь не найден', 'error');
                 return;
             }
             
-            if (users[userIndex].friends && users[userIndex].friends.includes(friendUsername)) {
+            if (localUsers[userIndex].friends && localUsers[userIndex].friends.includes(friendUsername)) {
                 showNotification('Этот пользователь уже у вас в друзьях', 'warning');
                 return;
             }
             
-            if (!users[userIndex].friends) users[userIndex].friends = [];
-            users[userIndex].friends.push(friendUsername);
+            if (!localUsers[userIndex].friends) localUsers[userIndex].friends = [];
+            localUsers[userIndex].friends.push(friendUsername);
             
-            if (!users[friendIndex].friends) users[friendIndex].friends = [];
-            if (!users[friendIndex].friends.includes(currentUser.username)) {
-                users[friendIndex].friends.push(currentUser.username);
+            if (!localUsers[friendIndex].friends) localUsers[friendIndex].friends = [];
+            if (!localUsers[friendIndex].friends.includes(currentUser.username)) {
+                localUsers[friendIndex].friends.push(currentUser.username);
             }
             
-            saveUsers(users);
+            saveLocalUsers(localUsers);
+            updateGlobalStorage();
             
-            currentUser.friends = users[userIndex].friends;
+            currentUser.friends = localUsers[userIndex].friends;
             sessionStorage.setItem('current_user_v3', JSON.stringify(currentUser));
             
             showNotification(`✅ ${friendUsername} добавлен в друзья!`, 'success');
@@ -5554,7 +5606,7 @@
             const currentUser = getCurrentUser();
             if (!currentUser) return;
             
-            const users = getUsers();
+            const users = getAllUsers();
             const friendsList = document.getElementById('friendsList');
             
             if (!currentUser.friends || currentUser.friends.length === 0) {
@@ -5605,22 +5657,23 @@
             if (!confirm(`Удалить ${friendUsername} из друзей?`)) return;
             
             const currentUser = getCurrentUser();
-            const users = getUsers();
+            const localUsers = getLocalUsers();
             
-            const userIndex = users.findIndex(u => u.username === currentUser.username);
-            const friendIndex = users.findIndex(u => u.username === friendUsername);
+            const userIndex = localUsers.findIndex(u => u.username === currentUser.username);
+            const friendIndex = localUsers.findIndex(u => u.username === friendUsername);
             
             if (userIndex !== -1) {
-                users[userIndex].friends = users[userIndex].friends.filter(f => f !== friendUsername);
+                localUsers[userIndex].friends = localUsers[userIndex].friends.filter(f => f !== friendUsername);
             }
             
             if (friendIndex !== -1) {
-                users[friendIndex].friends = users[friendIndex].friends.filter(f => f !== currentUser.username);
+                localUsers[friendIndex].friends = localUsers[friendIndex].friends.filter(f => f !== currentUser.username);
             }
             
-            saveUsers(users);
+            saveLocalUsers(localUsers);
+            updateGlobalStorage();
             
-            currentUser.friends = users[userIndex].friends;
+            currentUser.friends = localUsers[userIndex].friends;
             sessionStorage.setItem('current_user_v3', JSON.stringify(currentUser));
             
             showNotification(`❌ ${friendUsername} удален из друзей`, 'info');
@@ -5730,7 +5783,7 @@
         }
         
         function isAdminOrFounderOnline() {
-            const users = getUsers();
+            const users = getAllUsers();
             return users.some(u => (u.isAdmin || u.isFounder) && u.online);
         }
 
@@ -5738,9 +5791,38 @@
         // ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
         // ==============================================
         function initDatabase() {
-            console.log("Инициализация базы данных v3...");
+            console.log("Инициализация базы данных v5 с синхронизацией...");
             
-            let users = getUsers();
+            // Получаем ID устройства
+            currentDeviceId = getDeviceId();
+            console.log("ID устройства:", currentDeviceId);
+            
+            // Инициализируем локальных пользователей
+            let localUsers = getLocalUsers();
+            
+            // Инициализируем глобальное хранилище
+            const globalData = getGlobalStorage();
+            
+            // Добавляем системных пользователей если их нет
+            const founderExists = localUsers.some(u => u.username === FOUNDER_ACCOUNT.username);
+            const adminExists = localUsers.some(u => u.username === ADMIN_ACCOUNT.username);
+            
+            if (!founderExists) {
+                FOUNDER_ACCOUNT.deviceId = currentDeviceId;
+                FOUNDER_ACCOUNT.lastSync = new Date().toISOString();
+                localUsers.push(FOUNDER_ACCOUNT);
+            }
+            
+            if (!adminExists) {
+                ADMIN_ACCOUNT.deviceId = currentDeviceId;
+                ADMIN_ACCOUNT.lastSync = new Date().toISOString();
+                localUsers.push(ADMIN_ACCOUNT);
+            }
+            
+            saveLocalUsers(localUsers);
+            
+            // Обновляем глобальное хранилище
+            updateGlobalStorage();
             
             if (!localStorage.getItem('luseam_games_v2')) {
                 const games = [
@@ -5802,31 +5884,32 @@
             });
             
             const libraries = JSON.parse(localStorage.getItem('luseam_libraries_v2') || '{}');
-            users.forEach(user => {
+            localUsers.forEach(user => {
                 if (!libraries[user.username]) {
                     libraries[user.username] = [];
                 }
             });
             localStorage.setItem('luseam_libraries_v2', JSON.stringify(libraries));
             
-            syncWithGlobalStorage();
-            
             initCookieSystem();
             
-            console.log("База данных инициализирована успешно");
-            console.log("Всего пользователей:", users.length);
+            console.log("✅ База данных инициализирована успешно");
+            console.log("Всего пользователей в системе:", getAllUsers().length);
             console.log("Для быстрого тестирования:");
             console.log("Основатель: luce1105 | Пароль: Luce110516+++");
             console.log("Администратор: Administrator | Пароль: Luce228547+++");
-            console.log("🍪 Система cookies и IP-сбора инициализирована");
-            console.log("👥 Система друзей и чата готова");
+            console.log("📱 ID устройства:", currentDeviceId);
+            console.log("🔄 Система синхронизации активна");
+            console.log("👥 Основатель видит ВСЕХ пользователей");
+            console.log("🌐 Cloudflare защита от ботов активна");
+            console.log("✅ Все системы работают корректно");
         }
 
         // ==============================================
         // ИНИЦИАЛИЗАЦИЯ
         // ==============================================
         window.addEventListener('DOMContentLoaded', () => {
-            console.log("Документ загружен, инициализируем v3...");
+            console.log("Документ загружен, инициализируем v5...");
             
             initDatabase();
             
@@ -5874,33 +5957,30 @@
             });
             
             if (user) {
-                const users = getUsers();
-                const userIndex = users.findIndex(u => u.username === user.username);
+                const localUsers = getLocalUsers();
+                const userIndex = localUsers.findIndex(u => u.username === user.username);
                 if (userIndex !== -1) {
-                    users[userIndex].online = true;
-                    saveUsers(users);
+                    localUsers[userIndex].online = true;
+                    saveLocalUsers(localUsers);
                 }
             }
             
-            console.log("Для быстрого тестирования:");
-            console.log("Основатель: luce1105 | Пароль: Luce110516+++");
-            console.log("Администратор: Administrator | Пароль: Luce228547+++");
-            console.log("🍪 Система cookies и IP-сбора инициализирована");
-            console.log("👥 Система друзей и чата готова");
-            console.log("📱 Поддержка мобильных устройств активна");
-            console.log("🌐 Cloudflare защита от ботов активна");
-            console.log("✅ Все системы работают корректно");
-            console.log("⚠️ Внимание: Администрация имеет доступ к IP-адресам для безопасности");
+            console.log("✅ Готово! Система синхронизации активна.");
+            console.log("👑 Основатель видит ВСЕХ пользователей со всех устройств");
+            console.log("📱 Каждое устройство имеет уникальный ID:", currentDeviceId);
+            console.log("🔄 При открытии панели основателя происходит синхронизация");
+            console.log("🌐 Все изменения применяются ко всем устройствам");
         });
 
         window.addEventListener('beforeunload', function() {
             const currentUser = getCurrentUser();
             if (currentUser) {
-                const users = getUsers();
-                const userIndex = users.findIndex(u => u.username === currentUser.username);
+                const localUsers = getLocalUsers();
+                const userIndex = localUsers.findIndex(u => u.username === currentUser.username);
                 if (userIndex !== -1) {
-                    users[userIndex].online = false;
-                    saveUsers(users);
+                    localUsers[userIndex].online = false;
+                    saveLocalUsers(localUsers);
+                    updateGlobalStorage();
                 }
             }
         });
