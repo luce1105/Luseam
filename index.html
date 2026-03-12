@@ -8,6 +8,37 @@
     
     <!-- Cloudflare защита от ботов -->
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+        const firebaseConfig = window.LUSEAM_FIREBASE_CONFIG || {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_AUTH_DOMAIN",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_STORAGE_BUCKET",
+            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        window.__luseamFirebase = {
+            auth: getAuth(app),
+            db: getFirestore(app),
+            GoogleAuthProvider,
+            signInWithPopup,
+            collection,
+            doc,
+            getDoc,
+            getDocs,
+            setDoc,
+            deleteDoc,
+            onSnapshot,
+            serverTimestamp
+        };
+    </script>
     
     <style>
         * {
@@ -1632,6 +1663,11 @@
                     <span>🚀</span>
                     <span>ВОЙТИ В АККАУНТ</span>
                 </button>
+
+                <button class="btn btn-secondary" onclick="loginWithGoogle()" style="width: 100%; margin-bottom: 15px; border-color: rgba(102, 192, 244, 0.5);">
+                    <span>🟢</span>
+                    <span>ВОЙТИ ЧЕРЕЗ GOOGLE</span>
+                </button>
                 
                 <button class="btn btn-secondary" onclick="showAuthChoice()" style="width: 100%;">
                     <span>↩️</span>
@@ -2387,6 +2423,57 @@
         // ==============================================
         
         // Генерация уникального ID устройства
+        const DEFAULT_GLOBAL_DATA = {
+            version: 6,
+            users: [],
+            games: [],
+            reviews: {},
+            moderation: [],
+            support: [],
+            libraries: {},
+            installs: {},
+            statistics: {
+                totalUsers: 0,
+                totalGames: 0,
+                totalRevenue: 0,
+                dailyActiveUsers: []
+            },
+            analytics: {
+                visits: [],
+                registrations: [],
+                logins: [],
+                ips: []
+            },
+            friends: {},
+            chats: {},
+            lastSync: null,
+            devices: []
+        };
+
+        const GLOBAL_STORAGE_KEY = 'luseam_global_data_v6';
+        const FIREBASE_USERS_CACHE = new Map();
+        let firestoreUsersUnsubscribe = null;
+        let firestoreGlobalUnsubscribe = null;
+        let firestoreReady = false;
+        let globalDataCache = structuredClone(DEFAULT_GLOBAL_DATA);
+
+        function getFirestoreCollectionPath() {
+            const appId = window.LUSEAM_APP_ID || 'luseam';
+            return `/artifacts/${appId}/public/data`;
+        }
+
+        function normalizeUser(user) {
+            const lastSeenValue = user.lastSeen && typeof user.lastSeen.toDate === 'function' ? user.lastSeen.toDate().toISOString() : (user.lastSeen || new Date().toISOString());
+            return {
+                ...user,
+                uid: user.uid || user.username,
+                online: (Date.now() - new Date(lastSeenValue).getTime()) < 120000,
+                lastSeen: lastSeenValue,
+                deviceId: user.deviceId || currentDeviceId,
+                lastSync: new Date().toISOString()
+            };
+        }
+
         function getDeviceId() {
             let deviceId = localStorage.getItem('luseam_device_id');
             if (!deviceId) {
@@ -2395,268 +2482,137 @@
             }
             return deviceId;
         }
-        
-        // Получение всех пользователей (локальных + синхронизированных)
+
+        async function initFirestoreSync() {
+            if (!window.__luseamFirebase || firestoreReady) return;
+
+            const fb = window.__luseamFirebase;
+            const pathBase = getFirestoreCollectionPath();
+            const usersRef = fb.collection(fb.db, `${pathBase}/users`);
+            const globalDocRef = fb.doc(fb.db, `${pathBase}/system/global`);
+
+            firestoreUsersUnsubscribe = fb.onSnapshot(usersRef, (snapshot) => {
+                FIREBASE_USERS_CACHE.clear();
+                snapshot.forEach((docSnap) => {
+                    const user = normalizeUser({ ...docSnap.data(), uid: docSnap.id });
+                    FIREBASE_USERS_CACHE.set(user.uid, user);
+                });
+            });
+
+            firestoreGlobalUnsubscribe = fb.onSnapshot(globalDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const cloudData = docSnap.data();
+                    globalDataCache = {
+                        ...structuredClone(DEFAULT_GLOBAL_DATA),
+                        ...cloudData,
+                        games: cloudData.games || [],
+                        reviews: cloudData.reviews || {},
+                        moderation: cloudData.moderation || [],
+                        support: cloudData.support || [],
+                        libraries: cloudData.libraries || {},
+                        installs: cloudData.installs || {}
+                    };
+                    localStorage.setItem('luseam_games_v2', JSON.stringify(globalDataCache.games));
+                    localStorage.setItem('luseam_moderation_v2', JSON.stringify(globalDataCache.moderation));
+                    localStorage.setItem('luseam_support_v2', JSON.stringify(globalDataCache.support));
+                    localStorage.setItem('luseam_libraries_v2', JSON.stringify(globalDataCache.libraries));
+                    localStorage.setItem('luseam_installs_v2', JSON.stringify(globalDataCache.installs));
+                }
+            });
+
+            firestoreReady = true;
+        }
+
         function getAllUsers() {
-            try {
-                const localUsers = getLocalUsers();
-                const globalUsers = getGlobalUsers();
-                
-                // Объединяем пользователей, приоритет у глобальных данных
-                const allUsersMap = new Map();
-                
-                // Сначала добавляем локальных пользователей
-                localUsers.forEach(user => {
-                    if (user && user.username) {
-                        allUsersMap.set(user.username, {
-                            ...user,
-                            source: 'local',
-                            deviceId: user.deviceId || currentDeviceId
-                        });
-                    }
-                });
-                
-                // Затем добавляем/обновляем глобальными пользователями
-                globalUsers.forEach(globalUser => {
-                    if (globalUser && globalUser.username) {
-                        const existingUser = allUsersMap.get(globalUser.username);
-                        if (existingUser) {
-                            // Объединяем данные, приоритет у глобальных
-                            allUsersMap.set(globalUser.username, {
-                                ...existingUser,
-                                ...globalUser,
-                                source: 'global',
-                                deviceId: globalUser.deviceId || existingUser.deviceId
-                            });
-                        } else {
-                            allUsersMap.set(globalUser.username, {
-                                ...globalUser,
-                                source: 'global'
-                            });
-                        }
-                    }
-                });
-                
-                return Array.from(allUsersMap.values());
-            } catch (e) {
-                console.error("Ошибка при получении всех пользователей:", e);
-                return [];
-            }
+            return Array.from(FIREBASE_USERS_CACHE.values());
         }
-        
-        // Получение локальных пользователей
+
         function getLocalUsers() {
-            try {
-                const usersData = localStorage.getItem('luseam_users_v3');
-                
-                if (!usersData) {
-                    const baseUsers = [FOUNDER_ACCOUNT, ADMIN_ACCOUNT];
-                    baseUsers.forEach(user => {
-                        user.deviceId = currentDeviceId;
-                        user.lastSync = new Date().toISOString();
-                    });
-                    localStorage.setItem('luseam_users_v3', JSON.stringify(baseUsers));
-                    return baseUsers;
-                }
-                
-                const parsed = JSON.parse(usersData);
-                return Array.isArray(parsed) ? parsed : [];
-            } catch (e) {
-                console.error("Ошибка при чтении локальных пользователей:", e);
-                return [];
-            }
+            const users = getAllUsers();
+            if (users.length > 0) return users;
+            return [normalizeUser(FOUNDER_ACCOUNT), normalizeUser(ADMIN_ACCOUNT)];
         }
-        
-        // Сохранение локальных пользователей
+
+        async function saveUserToFirestore(user) {
+            if (!window.__luseamFirebase) return;
+            const fb = window.__luseamFirebase;
+            const pathBase = getFirestoreCollectionPath();
+            const uid = user.uid || user.username;
+            const payload = {
+                ...user,
+                uid,
+                online: undefined,
+                lastSeen: fb.serverTimestamp(),
+                updatedAt: new Date().toISOString()
+            };
+            delete payload.source;
+            await fb.setDoc(fb.doc(fb.db, `${pathBase}/users/${uid}`), payload, { merge: true });
+        }
+
         function saveLocalUsers(usersArray) {
-            try {
-                if (!Array.isArray(usersArray)) {
-                    console.error("Ошибка: пытаемся сохранить не массив пользователей");
-                    return false;
-                }
-                
-                // Добавляем deviceId если нет
-                usersArray.forEach(user => {
-                    if (!user.deviceId) {
-                        user.deviceId = currentDeviceId;
-                    }
-                    user.lastSync = new Date().toISOString();
-                });
-                
-                localStorage.setItem('luseam_users_v3', JSON.stringify(usersArray));
-                return true;
-            } catch (e) {
-                console.error("Ошибка при сохранении локальных пользователей:", e);
-                return false;
-            }
+            if (!Array.isArray(usersArray)) return false;
+            usersArray.forEach((user) => {
+                const normalized = normalizeUser({ ...user, uid: user.uid || user.username });
+                FIREBASE_USERS_CACHE.set(normalized.uid, normalized);
+                saveUserToFirestore(normalized).catch((e) => console.error('Ошибка сохранения user в Firestore', e));
+            });
+            return true;
         }
-        
-        // Получение глобальных пользователей
+
         function getGlobalUsers() {
-            try {
-                const globalData = getGlobalStorage();
-                return globalData.users || [];
-            } catch (e) {
-                console.error("Ошибка при получении глобальных пользователей:", e);
-                return [];
-            }
+            return getAllUsers();
         }
-        
-        // Сохранение глобальных пользователей
+
         function saveGlobalUsers(usersArray) {
-            try {
-                const globalData = getGlobalStorage();
-                globalData.users = usersArray;
-                globalData.lastSync = new Date().toISOString();
-                saveGlobalStorage(globalData);
-                return true;
-            } catch (e) {
-                console.error("Ошибка при сохранении глобальных пользователей:", e);
-                return false;
-            }
+            return saveLocalUsers(usersArray);
         }
-        
-        // Обновление глобального хранилища
+
         function updateGlobalStorage() {
-            try {
-                const localUsers = getLocalUsers();
-                const globalData = getGlobalStorage();
-                
-                // Объединяем пользователей в глобальное хранилище
-                const globalUsersMap = new Map();
-                
-                // Добавляем существующих глобальных пользователей
-                (globalData.users || []).forEach(user => {
-                    if (user && user.username) {
-                        globalUsersMap.set(user.username, user);
-                    }
-                });
-                
-                // Обновляем/добавляем локальных пользователей
-                localUsers.forEach(localUser => {
-                    if (localUser && localUser.username) {
-                        const existingGlobalUser = globalUsersMap.get(localUser.username);
-                        if (existingGlobalUser) {
-                            // Обновляем только если локальные данные новее
-                            if (!existingGlobalUser.lastSync || 
-                                new Date(localUser.lastSync) > new Date(existingGlobalUser.lastSync)) {
-                                globalUsersMap.set(localUser.username, {
-                                    ...existingGlobalUser,
-                                    ...localUser,
-                                    lastSync: new Date().toISOString()
-                                });
-                            }
-                        } else {
-                            // Добавляем нового пользователя
-                            globalUsersMap.set(localUser.username, {
-                                ...localUser,
-                                lastSync: new Date().toISOString()
-                            });
-                        }
-                    }
-                });
-                
-                // Сохраняем обратно
-                globalData.users = Array.from(globalUsersMap.values());
-                globalData.lastSync = new Date().toISOString();
-                saveGlobalStorage(globalData);
-                
-                return true;
-            } catch (e) {
-                console.error("Ошибка при обновлении глобального хранилища:", e);
-                return false;
-            }
+            const users = getAllUsers();
+            globalDataCache.users = users;
+            globalDataCache.statistics.totalUsers = users.length;
+            globalDataCache.lastSync = new Date().toISOString();
+            saveGlobalStorage(globalDataCache);
+            return true;
         }
-        
-        // Синхронизация пользователей для основателя
-        function syncUsersForFounder() {
-            const currentUser = getCurrentUser();
-            if (!currentUser || !currentUser.isFounder) {
-                return false;
-            }
-            
-            try {
-                // Обновляем глобальное хранилище
-                updateGlobalStorage();
-                
-                // Получаем всех пользователей
-                const allUsers = getAllUsers();
-                
-                // Обновляем локальное хранилище основателя
-                const localUsers = getLocalUsers();
-                const localUsersMap = new Map();
-                
-                localUsers.forEach(user => {
-                    if (user && user.username) {
-                        localUsersMap.set(user.username, user);
-                    }
-                });
-                
-                // Добавляем/обновляем пользователей из глобального хранилища
-                allUsers.forEach(user => {
-                    if (user && user.username) {
-                        localUsersMap.set(user.username, {
-                            ...user,
-                            deviceId: user.deviceId || currentDeviceId,
-                            lastSync: new Date().toISOString()
-                        });
-                    }
-                });
-                
-                // Сохраняем обновленных пользователей
-                saveLocalUsers(Array.from(localUsersMap.values()));
-                
-                console.log("✅ Синхронизация для основателя завершена");
-                console.log("Всего пользователей в системе:", allUsers.length);
-                
-                return true;
-            } catch (e) {
-                console.error("Ошибка при синхронизации для основателя:", e);
-                return false;
-            }
-        }
-        
+
         // ==============================================
         // ОСТАЛЬНЫЕ ФУНКЦИИ (адаптированные)
         // ==============================================
-        
+
         function getUsers() {
             return getLocalUsers();
         }
-        
+
         function saveUsers(usersArray) {
-            const result = saveLocalUsers(usersArray);
-            if (result) {
-                // Автоматически обновляем глобальное хранилище
-                updateGlobalStorage();
-            }
-            return result;
+            return saveLocalUsers(usersArray);
         }
-        
+
         function findUser(usernameOrEmail) {
             const users = getAllUsers();
-            return users.find(u => 
-                u.username.toLowerCase() === usernameOrEmail.toLowerCase() || 
+            return users.find(u =>
+                u.username.toLowerCase() === usernameOrEmail.toLowerCase() ||
                 (u.email && u.email.toLowerCase() === usernameOrEmail.toLowerCase())
             );
         }
-        
+
         function getCurrentUser() {
             try {
                 const userData = sessionStorage.getItem('current_user_v3');
                 if (!userData) return null;
-                
+
                 const sessionUser = JSON.parse(userData);
                 const allUsers = getAllUsers();
-                const fullUser = allUsers.find(u => u.username === sessionUser.username);
-                
+                const fullUser = allUsers.find(u => u.username === sessionUser.username || u.uid === sessionUser.uid);
+
                 if (!fullUser) {
                     sessionStorage.removeItem('current_user_v3');
                     return null;
                 }
-                
+
                 const updatedUser = {
                     username: fullUser.username,
+                    uid: fullUser.uid || fullUser.username,
                     email: fullUser.email,
                     balance: fullUser.balance,
                     isAdmin: fullUser.isAdmin || false,
@@ -2665,13 +2621,13 @@
                     bans: fullUser.bans || [],
                     friends: fullUser.friends || [],
                     chats: fullUser.chats || {},
-                    online: true,
+                    online: fullUser.online,
                     deviceId: fullUser.deviceId || currentDeviceId
                 };
-                
+
                 sessionStorage.setItem('current_user_v3', JSON.stringify(updatedUser));
                 return updatedUser;
-                
+
             } catch (e) {
                 console.error("Ошибка при получении текущего пользователя:", e);
                 return null;
@@ -2681,51 +2637,32 @@
         // ==============================================
         // ГЛОБАЛЬНОЕ ХРАНИЛИЩЕ
         // ==============================================
-        
-        const GLOBAL_STORAGE_KEY = 'luseam_global_data_v5';
-        
+
         function getGlobalStorage() {
-            try {
-                const data = localStorage.getItem(GLOBAL_STORAGE_KEY);
-                if (!data) {
-                    return {
-                        version: 5,
-                        users: [],
-                        games: [],
-                        reviews: {},
-                        moderation: [],
-                        support: [],
-                        libraries: {},
-                        installs: {},
-                        statistics: {
-                            totalUsers: 0,
-                            totalGames: 0,
-                            totalRevenue: 0,
-                            dailyActiveUsers: []
-                        },
-                        analytics: {
-                            visits: [],
-                            registrations: [],
-                            logins: [],
-                            ips: []
-                        },
-                        friends: {},
-                        chats: {},
-                        lastSync: null,
-                        devices: []
-                    };
-                }
-                return JSON.parse(data);
-            } catch (e) {
-                console.error('Ошибка при чтении глобального хранилища:', e);
-                return null;
-            }
+            return globalDataCache;
         }
-        
+
         function saveGlobalStorage(data) {
             try {
-                data.lastSync = new Date().toISOString();
-                localStorage.setItem(GLOBAL_STORAGE_KEY, JSON.stringify(data));
+                globalDataCache = {
+                    ...structuredClone(DEFAULT_GLOBAL_DATA),
+                    ...data,
+                    users: getAllUsers(),
+                    games: JSON.parse(localStorage.getItem('luseam_games_v2') || '[]'),
+                    moderation: JSON.parse(localStorage.getItem('luseam_moderation_v2') || '[]'),
+                    support: JSON.parse(localStorage.getItem('luseam_support_v2') || '[]'),
+                    libraries: JSON.parse(localStorage.getItem('luseam_libraries_v2') || '{}'),
+                    installs: JSON.parse(localStorage.getItem('luseam_installs_v2') || '{}'),
+                    lastSync: new Date().toISOString()
+                };
+                localStorage.setItem(GLOBAL_STORAGE_KEY, JSON.stringify(globalDataCache));
+                if (window.__luseamFirebase) {
+                    const fb = window.__luseamFirebase;
+                    const pathBase = getFirestoreCollectionPath();
+                    fb.setDoc(fb.doc(fb.db, `${pathBase}/system/global`), globalDataCache, { merge: true }).catch((e) => {
+                        console.error('Ошибка синхронизации global с Firestore', e);
+                    });
+                }
                 return true;
             } catch (e) {
                 console.error('Ошибка при сохранении глобального хранилища:', e);
@@ -2959,12 +2896,18 @@
         // ==============================================
         // ИСПРАВЛЕННАЯ РЕГИСТРАЦИЯ С СИНХРОНИЗАЦИЕЙ
         // ==============================================
-        function register() {
+        async function register() {
             const username = document.getElementById('regUsername').value.trim();
             const email = document.getElementById('regEmail').value.trim();
             const password = document.getElementById('regPassword').value;
             const passwordConfirm = document.getElementById('regPasswordConfirm').value;
             const birthdate = document.getElementById('regBirthday').value;
+            const turnstileToken = window.turnstile ? window.turnstile.getResponse() : '';
+
+            if (!turnstileToken) {
+                showNotification('Подтвердите Cloudflare Turnstile', 'error');
+                return;
+            }
             
             if (!username || username.length < 3) {
                 showNotification('Никнейм должен быть не менее 3 символов', 'error');
@@ -3078,14 +3021,24 @@
             setTimeout(() => {
                 showDashboard();
             }, 1000);
+
+            if (window.turnstile) {
+                window.turnstile.reset();
+            }
         }
         
         // ==============================================
         // ИСПРАВЛЕННЫЙ ВХОД С СИНХРОНИЗАЦИЕЙ
         // ==============================================
-        function login() {
+        async function login() {
             const username = document.getElementById('loginUsername').value.trim();
             const password = document.getElementById('loginPassword').value;
+            const turnstileToken = window.turnstile ? window.turnstile.getResponse() : '';
+
+            if (!turnstileToken) {
+                showNotification('Подтвердите Cloudflare Turnstile', 'error');
+                return;
+            }
             
             if (!username || !password) {
                 showNotification('Заполните все поля', 'error');
@@ -3153,8 +3106,78 @@
             setTimeout(() => {
                 showDashboard();
             }, 1000);
+
+            if (window.turnstile) {
+                window.turnstile.reset();
+            }
         }
         
+        async function loginWithGoogle() {
+            try {
+                if (!window.__luseamFirebase) {
+                    showNotification('Firebase не настроен для Google входа', 'error');
+                    return;
+                }
+
+                const fb = window.__luseamFirebase;
+                const provider = new fb.GoogleAuthProvider();
+                const result = await fb.signInWithPopup(fb.auth, provider);
+                const gUser = result.user;
+
+                const userDoc = {
+                    uid: gUser.uid,
+                    username: gUser.displayName || gUser.email.split('@')[0],
+                    email: gUser.email,
+                    password: '',
+                    birthdate: '',
+                    balance: 100,
+                    regDate: new Date().toISOString(),
+                    isAdmin: false,
+                    isFounder: false,
+                    isBanned: false,
+                    lastLogin: new Date().toISOString(),
+                    lastSeen: new Date().toISOString(),
+                    ipHistory: [clientIP || 'unknown'],
+                    bans: [],
+                    age: 18,
+                    friends: [],
+                    chats: {},
+                    online: true,
+                    deviceId: currentDeviceId
+                };
+
+                await saveUserToFirestore(userDoc);
+                saveLocalUsers([...getLocalUsers().filter(u => u.uid !== userDoc.uid), userDoc]);
+
+                const userSession = {
+                    username: userDoc.username,
+                    uid: userDoc.uid,
+                    email: userDoc.email,
+                    balance: userDoc.balance,
+                    isAdmin: false,
+                    isFounder: false,
+                    isBanned: false,
+                    bans: [],
+                    friends: [],
+                    chats: {},
+                    online: true,
+                    deviceId: currentDeviceId
+                };
+
+                sessionStorage.setItem('current_user_v3', JSON.stringify(userSession));
+                updateGlobalStorage();
+                showNotification(`✅ Вход через Google выполнен: ${userDoc.username}`, 'success');
+                setTimeout(() => showDashboard(), 600);
+            } catch (error) {
+                console.error(error);
+                showNotification('Ошибка входа через Google', 'error');
+            } finally {
+                if (window.turnstile) {
+                    window.turnstile.reset();
+                }
+            }
+        }
+
         // ==============================================
         // ПАНЕЛЬ ОСНОВАТЕЛЯ С СИНХРОНИЗАЦИЕЙ
         // ==============================================
@@ -5791,7 +5814,8 @@
         // ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
         // ==============================================
         function initDatabase() {
-            console.log("Инициализация базы данных v5 с синхронизацией...");
+            console.log("Инициализация базы данных v6 с Firestore синхронизацией...");
+            initFirestoreSync();
             
             // Получаем ID устройства
             currentDeviceId = getDeviceId();
@@ -5978,6 +6002,7 @@
                 const localUsers = getLocalUsers();
                 const userIndex = localUsers.findIndex(u => u.username === currentUser.username);
                 if (userIndex !== -1) {
+                    localUsers[userIndex].lastSeen = new Date().toISOString();
                     localUsers[userIndex].online = false;
                     saveLocalUsers(localUsers);
                     updateGlobalStorage();
