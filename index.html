@@ -6,9 +6,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/x-icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎮</text></svg>">
     
-    <!-- Защита от ботов -->
-    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
         import { getAuth } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -1554,12 +1551,6 @@
             line-height: 1.3;
         }
         
-        .cloudflare-widget {
-            margin: 20px 0;
-            display: flex;
-            justify-content: center;
-        }
-        
         .auto-delete-notice {
             background: rgba(255, 165, 2, 0.1);
             border-left: 4px solid var(--warning);
@@ -1593,11 +1584,6 @@
     <section id="homeSection" class="hero-section">
         <h1 class="hero-title">🎮 LUSEAM — Ваша игровая вселенная</h1>
         <p class="hero-subtitle">Открывайте, играйте, создавайте. Единственная платформа, где каждый может стать разработчиком.</p>
-        
-        <div class="cloudflare-widget">
-            <!-- Виджет защиты от ботов -->
-            <div class="cf-turnstile" data-sitekey="0x4AAAAAAACUf0yAz4O7rGZQ" data-theme="dark"></div>
-        </div>
         
         <div class="hero-buttons">
             <button class="btn btn-primary" onclick="showAuth()">
@@ -1671,10 +1657,6 @@
                     <input type="password" id="loginPassword" class="form-input" placeholder="Введите ваш пароль">
                 </div>
                 
-                <div class="cloudflare-widget" style="margin: 20px 0;">
-                    <div class="cf-turnstile" data-sitekey="0x4AAAAAAACUf0yAz4O7rGZQ" data-theme="dark"></div>
-                </div>
-                
                 <button class="btn btn-primary" onclick="login()" style="width: 100%; margin-bottom: 15px;">
                     <span>🚀</span>
                     <span>ВОЙТИ В АККАУНТ</span>
@@ -1710,10 +1692,6 @@
                 <div class="form-group">
                     <label class="form-label">Дата рождения</label>
                     <input type="date" id="regBirthday" class="form-input">
-                </div>
-                
-                <div class="cloudflare-widget" style="margin: 20px 0;">
-                    <div class="cf-turnstile" data-sitekey="0x4AAAAAAACUf0yAz4O7rGZQ" data-theme="dark"></div>
                 </div>
                 
                 <button class="btn btn-success" onclick="register()" style="width: 100%; margin-bottom: 15px;">
@@ -2950,13 +2928,6 @@
             const password = document.getElementById('regPassword').value;
             const passwordConfirm = document.getElementById('regPasswordConfirm').value;
             const birthdate = document.getElementById('regBirthday').value;
-            const turnstileToken = window.turnstile ? window.turnstile.getResponse() : '';
-
-            if (!turnstileToken) {
-                showNotification('Подтвердите проверку защиты', 'error');
-                return;
-            }
-            
             if (!username || username.length < 3) {
                 showNotification('Никнейм должен быть не менее 3 символов', 'error');
                 return;
@@ -3070,9 +3041,6 @@
                 showDashboard();
             }, 1000);
 
-            if (window.turnstile) {
-                window.turnstile.reset();
-            }
         }
         
         // ==============================================
@@ -3081,13 +3049,6 @@
         async function login() {
             const username = document.getElementById('loginUsername').value.trim();
             const password = document.getElementById('loginPassword').value;
-            const turnstileToken = window.turnstile ? window.turnstile.getResponse() : '';
-
-            if (!turnstileToken) {
-                showNotification('Подтвердите проверку защиты', 'error');
-                return;
-            }
-            
             if (!username || !password) {
                 showNotification('Заполните все поля', 'error');
                 return;
@@ -3155,9 +3116,6 @@
                 showDashboard();
             }, 1000);
 
-            if (window.turnstile) {
-                window.turnstile.reset();
-            }
         }
 
         // ==============================================
