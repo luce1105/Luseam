@@ -6,12 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/x-icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎮</text></svg>">
     
-    <!-- Cloudflare защита от ботов -->
+    <!-- Защита от ботов -->
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getAuth } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
         import { getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
         function resolveFirebaseConfig() {
@@ -42,10 +42,6 @@
             window.__luseamFirebase = {
                 auth: getAuth(app),
                 db: getFirestore(app),
-                GoogleAuthProvider,
-                signInWithPopup,
-                signInWithRedirect,
-                getRedirectResult,
                 collection,
                 doc,
                 getDoc,
@@ -58,13 +54,6 @@
 
             return window.__luseamFirebase;
         };
-
-        const fb = window.initLuseamFirebase();
-        if (fb) {
-            fb.getRedirectResult(fb.auth).catch((error) => {
-                console.error('Ошибка обработки redirect входа Google:', error);
-            });
-        }
     </script>
     
     <style>
@@ -1606,7 +1595,7 @@
         <p class="hero-subtitle">Открывайте, играйте, создавайте. Единственная платформа, где каждый может стать разработчиком.</p>
         
         <div class="cloudflare-widget">
-            <!-- Cloudflare Turnstile Widget -->
+            <!-- Виджет защиты от ботов -->
             <div class="cf-turnstile" data-sitekey="0x4AAAAAAACUf0yAz4O7rGZQ" data-theme="dark"></div>
         </div>
         
@@ -1689,11 +1678,6 @@
                 <button class="btn btn-primary" onclick="login()" style="width: 100%; margin-bottom: 15px;">
                     <span>🚀</span>
                     <span>ВОЙТИ В АККАУНТ</span>
-                </button>
-
-                <button class="btn btn-secondary" onclick="loginWithGoogle()" style="width: 100%; margin-bottom: 15px; border-color: rgba(102, 192, 244, 0.5);">
-                    <span>🟢</span>
-                    <span>ВОЙТИ ЧЕРЕЗ GOOGLE</span>
                 </button>
                 
                 <button class="btn btn-secondary" onclick="showAuthChoice()" style="width: 100%;">
@@ -2382,7 +2366,7 @@
             
             <div class="copyright">
                 <p>© 2024 LUSEAM Platform. Все права защищены.</p>
-                <p style="margin-top: 10px; font-size: 14px;">Версия 3.0 | Enhanced Security Edition | IP Protection Active | Cloudflare Protected</p>
+                <p style="margin-top: 10px; font-size: 14px;">Версия 3.0 | Enhanced Security Edition | IP Protection Active | Bot Protection Enabled</p>
                 <p style="margin-top: 5px; font-size: 12px; color: var(--gray);">IP-адреса хранятся для безопасности и удаляются через 3 месяца</p>
             </div>
         </div>
@@ -2543,6 +2527,9 @@
                     localStorage.setItem('luseam_support_v2', JSON.stringify(globalDataCache.support));
                     localStorage.setItem('luseam_libraries_v2', JSON.stringify(globalDataCache.libraries));
                     localStorage.setItem('luseam_installs_v2', JSON.stringify(globalDataCache.installs));
+                    localStorage.setItem('luseam_reviews_v2', JSON.stringify(globalDataCache.reviews || {}));
+                    localStorage.setItem('luseam_friends_v1', JSON.stringify(globalDataCache.friends || {}));
+                    localStorage.setItem('luseam_chats_v1', JSON.stringify(globalDataCache.chats || {}));
                 }
             });
 
@@ -2668,6 +2655,38 @@
             return globalDataCache;
         }
 
+
+        const CLOUD_SYNC_KEYS = new Set([
+            'luseam_games_v2',
+            'luseam_moderation_v2',
+            'luseam_support_v2',
+            'luseam_libraries_v2',
+            'luseam_installs_v2',
+            'luseam_reviews_v2',
+            'luseam_friends_v1',
+            'luseam_chats_v1'
+        ]);
+
+        let isCloudSyncHookLocked = false;
+        function installGlobalLocalStorageSyncHook() {
+            if (window.__luseamStorageHookInstalled) return;
+            window.__luseamStorageHookInstalled = true;
+
+            const originalSetItem = localStorage.setItem.bind(localStorage);
+            localStorage.setItem = function(key, value) {
+                originalSetItem(key, value);
+                if (!CLOUD_SYNC_KEYS.has(key) || isCloudSyncHookLocked) return;
+                try {
+                    isCloudSyncHookLocked = true;
+                    saveGlobalStorage(getGlobalStorage());
+                } catch (e) {
+                    console.error('Ошибка cloud-sync hook:', e);
+                } finally {
+                    isCloudSyncHookLocked = false;
+                }
+            };
+        }
+
         function saveGlobalStorage(data) {
             try {
                 globalDataCache = {
@@ -2679,6 +2698,9 @@
                     support: JSON.parse(localStorage.getItem('luseam_support_v2') || '[]'),
                     libraries: JSON.parse(localStorage.getItem('luseam_libraries_v2') || '{}'),
                     installs: JSON.parse(localStorage.getItem('luseam_installs_v2') || '{}'),
+                    reviews: JSON.parse(localStorage.getItem('luseam_reviews_v2') || '{}'),
+                    friends: JSON.parse(localStorage.getItem('luseam_friends_v1') || '{}'),
+                    chats: JSON.parse(localStorage.getItem('luseam_chats_v1') || '{}'),
                     lastSync: new Date().toISOString()
                 };
                 localStorage.setItem(GLOBAL_STORAGE_KEY, JSON.stringify(globalDataCache));
@@ -2931,7 +2953,7 @@
             const turnstileToken = window.turnstile ? window.turnstile.getResponse() : '';
 
             if (!turnstileToken) {
-                showNotification('Подтвердите Cloudflare Turnstile', 'error');
+                showNotification('Подтвердите проверку защиты', 'error');
                 return;
             }
             
@@ -3062,7 +3084,7 @@
             const turnstileToken = window.turnstile ? window.turnstile.getResponse() : '';
 
             if (!turnstileToken) {
-                showNotification('Подтвердите Cloudflare Turnstile', 'error');
+                showNotification('Подтвердите проверку защиты', 'error');
                 return;
             }
             
@@ -3135,109 +3157,6 @@
 
             if (window.turnstile) {
                 window.turnstile.reset();
-            }
-        }
-        
-        async function completeGoogleLoginFromUser(gUser) {
-            const userDoc = {
-                uid: gUser.uid,
-                username: gUser.displayName || gUser.email.split('@')[0],
-                email: gUser.email,
-                password: '',
-                birthdate: '',
-                balance: 100,
-                regDate: new Date().toISOString(),
-                isAdmin: false,
-                isFounder: false,
-                isBanned: false,
-                lastLogin: new Date().toISOString(),
-                lastSeen: new Date().toISOString(),
-                ipHistory: [clientIP || 'unknown'],
-                bans: [],
-                age: 18,
-                friends: [],
-                chats: {},
-                online: true,
-                deviceId: currentDeviceId
-            };
-
-            await saveUserToFirestore(userDoc);
-            saveLocalUsers([...getLocalUsers().filter(u => u.uid !== userDoc.uid), userDoc]);
-
-            const userSession = {
-                username: userDoc.username,
-                uid: userDoc.uid,
-                email: userDoc.email,
-                balance: userDoc.balance,
-                isAdmin: false,
-                isFounder: false,
-                isBanned: false,
-                bans: [],
-                friends: [],
-                chats: {},
-                online: true,
-                deviceId: currentDeviceId
-            };
-
-            sessionStorage.setItem('current_user_v3', JSON.stringify(userSession));
-            updateGlobalStorage();
-            return userDoc;
-        }
-
-        async function processPendingGoogleRedirect() {
-            const fb = window.initLuseamFirebase ? window.initLuseamFirebase() : window.__luseamFirebase;
-            if (!fb) return false;
-
-            try {
-                const redirectResult = await fb.getRedirectResult(fb.auth);
-                if (redirectResult?.user) {
-                    const userDoc = await completeGoogleLoginFromUser(redirectResult.user);
-                    showNotification(`✅ Вход через Google выполнен: ${userDoc.username}`, 'success');
-                    setTimeout(() => showDashboard(), 400);
-                    return true;
-                }
-            } catch (error) {
-                console.error('Ошибка завершения Google redirect входа:', error);
-            }
-
-            return false;
-        }
-
-        async function loginWithGoogle() {
-            const fb = window.initLuseamFirebase ? window.initLuseamFirebase() : window.__luseamFirebase;
-
-            if (!fb) {
-                showNotification('Google-вход недоступен: заполните корректный window.LUSEAM_FIREBASE_CONFIG', 'error');
-                return;
-            }
-
-            try {
-                const provider = new fb.GoogleAuthProvider();
-                provider.setCustomParameters({ prompt: 'select_account' });
-
-                let result;
-                try {
-                    result = await fb.signInWithPopup(fb.auth, provider);
-                } catch (popupError) {
-                    const popupFallbackErrors = ['auth/popup-blocked', 'auth/popup-closed-by-user', 'auth/cancelled-popup-request'];
-                    if (popupFallbackErrors.includes(popupError.code)) {
-                        await fb.signInWithRedirect(fb.auth, provider);
-                        return;
-                    }
-                    throw popupError;
-                }
-
-                const userDoc = await completeGoogleLoginFromUser(result.user);
-                showNotification(`✅ Вход через Google выполнен: ${userDoc.username}`, 'success');
-                setTimeout(() => showDashboard(), 600);
-            } catch (error) {
-                console.error(error);
-                const message = error?.message || error?.code || 'Ошибка входа через Google';
-                showNotification(`Ошибка входа через Google: ${message}`, 'error');
-            } finally {
-                if (window.turnstile) {
-                    window.turnstile.reset();
-                }
             }
         }
 
@@ -5879,6 +5798,7 @@
         function initDatabase() {
             console.log("Инициализация базы данных v6 с Firestore синхронизацией...");
             initFirestoreSync();
+            installGlobalLocalStorageSyncHook();
             
             // Получаем ID устройства
             currentDeviceId = getDeviceId();
@@ -5988,18 +5908,17 @@
             console.log("📱 ID устройства:", currentDeviceId);
             console.log("🔄 Система синхронизации активна");
             console.log("👥 Основатель видит ВСЕХ пользователей");
-            console.log("🌐 Cloudflare защита от ботов активна");
+            console.log("🌐 Защита от ботов активна");
             console.log("✅ Все системы работают корректно");
         }
 
         // ==============================================
         // ИНИЦИАЛИЗАЦИЯ
         // ==============================================
-        window.addEventListener('DOMContentLoaded', async () => {
+        window.addEventListener('DOMContentLoaded', () => {
             console.log("Документ загружен, инициализируем v5...");
             
             initDatabase();
-            await processPendingGoogleRedirect();
             
             const user = getCurrentUser();
             if (user) {
